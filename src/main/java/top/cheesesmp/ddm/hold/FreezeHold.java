@@ -60,6 +60,7 @@ public final class FreezeHold {
     private final MethodHandle getConnection;
     private final MethodHandle getChannel;
     private final MethodHandle write;
+    private final MethodHandle getState;
     private final MethodHandle getConnectedServer;
     private final MethodHandle getEntityId;
     private final Class<?> disconnectPacketType;
@@ -78,6 +79,8 @@ public final class FreezeHold {
         /** The player's entity id on the dead server, needed to emit sounds. */
         private final Integer entityId;
         private volatile long nextKeepAliveAt;
+        /** Set while a reconnect is in flight, when the client is mid-handover. */
+        private volatile boolean quiet;
 
         private Held(Channel channel, HoldGuard guard, Object connection, Integer entityId) {
             this.channel = channel;
@@ -93,6 +96,7 @@ public final class FreezeHold {
         MethodHandle connectionHandle = null;
         MethodHandle channelHandle = null;
         MethodHandle writeHandle = null;
+        MethodHandle stateHandle = null;
         MethodHandle connectedServerHandle = null;
         MethodHandle entityIdHandle = null;
         Class<?> disconnectType = null;
@@ -114,6 +118,7 @@ public final class FreezeHold {
             connectedServerHandle = lookup.unreflect(connectedPlayer.getMethod("getConnectedServer"));
             channelHandle = lookup.unreflect(minecraftConnection.getMethod("getChannel"));
             writeHandle = lookup.unreflect(minecraftConnection.getMethod("write", Object.class));
+            stateHandle = lookup.unreflect(minecraftConnection.getMethod("getState"));
             entityIdHandle = lookup.unreflect(serverConnection.getMethod("getEntityId"));
 
             disconnectType = Class.forName(PACKET + "DisconnectPacket");
@@ -137,6 +142,7 @@ public final class FreezeHold {
         this.getConnection = connectionHandle;
         this.getChannel = channelHandle;
         this.write = writeHandle;
+        this.getState = stateHandle;
         this.getConnectedServer = connectedServerHandle;
         this.getEntityId = entityIdHandle;
         this.disconnectPacketType = disconnectType;
@@ -158,6 +164,74 @@ public final class FreezeHold {
 
     public boolean isHeld(UUID playerId) {
         return held.containsKey(playerId);
+    }
+
+    /**
+     * Stops writing to a held player while we reconnect them.
+     *
+     * <p>Since 1.20.2 a server switch takes the client through the
+     * configuration state, where the play packets written here do not exist. A
+     * keep-alive or sound landing in that window is encoded against the wrong
+     * packet registry and the client drops the connection with a protocol
+     * error, so nothing is sent from the moment a reconnect starts until the
+     * hold is handed back.
+     */
+    public void quiet(UUID playerId) {
+        Held entry = held.get(playerId);
+        if (entry != null) {
+            entry.quiet = true;
+        }
+    }
+
+    /**
+     * Starts writing to a held player again after a reconnect attempt failed
+     * and they are settled back on the proxy. Without this their keep-alives
+     * would never resume and the client would time out.
+     */
+    public void resume(UUID playerId) {
+        Held entry = held.get(playerId);
+        if (entry != null) {
+            entry.quiet = false;
+        }
+    }
+
+    /**
+     * Whether it is safe to send this player a play-state packet at all -
+     * including through Velocity's own API, which does not check either.
+     * Answers true when the state cannot be read, so behaviour is unchanged on
+     * a proxy whose internals this cannot reach.
+     */
+    public boolean canReceivePlayPackets(Player player) {
+        if (!supported) {
+            return true;
+        }
+        try {
+            Object connection = getConnection.invoke(player);
+            if (connection == null) {
+                return false;
+            }
+            Object state = getState.invoke(connection);
+            return state != null && "PLAY".equals(((Enum<?>) state).name());
+        } catch (Throwable ex) {
+            return true;
+        }
+    }
+
+    /**
+     * True only when this held player's client is in the play state and we are
+     * not in the middle of reconnecting them - the only time it is safe to
+     * write a play packet straight to them.
+     */
+    private boolean writable(Held entry) {
+        if (entry.quiet || !entry.channel.isActive()) {
+            return false;
+        }
+        try {
+            Object state = getState.invoke(entry.connection);
+            return state != null && "PLAY".equals(((Enum<?>) state).name());
+        } catch (Throwable ex) {
+            return false;
+        }
     }
 
     public int heldCount() {
@@ -244,6 +318,9 @@ public final class FreezeHold {
                 release(entry.getKey());
                 continue;
             }
+            if (!writable(entryValue)) {
+                continue;
+            }
             try {
                 Object packet = keepAliveCtor.newInstance();
                 setRandomId.invoke(packet, ThreadLocalRandom.current().nextLong());
@@ -263,7 +340,7 @@ public final class FreezeHold {
      */
     public boolean playSound(UUID playerId, Sound sound) {
         Held entry = held.get(playerId);
-        if (entry == null || entry.entityId == null) {
+        if (entry == null || entry.entityId == null || !writable(entry)) {
             return false;
         }
         try {
@@ -277,7 +354,7 @@ public final class FreezeHold {
     /** @see #playSound(UUID, Sound) */
     public boolean stopSound(UUID playerId, SoundStop stop) {
         Held entry = held.get(playerId);
-        if (entry == null) {
+        if (entry == null || !writable(entry)) {
             return false;
         }
         try {

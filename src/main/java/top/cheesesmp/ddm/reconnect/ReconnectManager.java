@@ -266,8 +266,14 @@ public final class ReconnectManager {
                 continue;
             }
             try {
-                proxy.getPlayer(session.playerId()).ifPresent(player ->
-                        display.update(player, session, placeholders(session, now), now));
+                // A client mid-handover is in the configuration state, where
+                // action bars, titles and chat do not exist as packets. Velocity
+                // does not check this for us, so skip the frame rather than send
+                // something the client cannot decode.
+                proxy.getPlayer(session.playerId())
+                        .filter(freezeHold::canReceivePlayPackets)
+                        .ifPresent(player ->
+                                display.update(player, session, placeholders(session, now), now));
             } catch (RuntimeException ex) {
                 logger.warn("Error while updating the display for {}", session.playerName(), ex);
             }
@@ -556,20 +562,30 @@ public final class ReconnectManager {
             return;
         }
 
+        // From here the client is handed between servers and passes through the
+        // configuration state, where the packets the hold writes do not exist.
+        // It stays quiet until the attempt resolves one way or the other.
+        UUID playerId = session.playerId();
+        freezeHold.quiet(playerId);
         player.createConnectionRequest(target.get()).connect().whenComplete((result, error) -> {
             session.connecting(false);
             long finishedAt = System.currentTimeMillis();
             if (error != null) {
+                freezeHold.resume(playerId);
                 onAttemptFailed(session, finishedAt, true);
                 return;
             }
             ConnectionRequestBuilder.Status status = result.getStatus();
             if (status == ConnectionRequestBuilder.Status.SUCCESS
                     || status == ConnectionRequestBuilder.Status.ALREADY_CONNECTED) {
+                // The hold is handed back by ServerConnectedEvent; stay quiet
+                // until then, while the client finishes switching to play.
                 debug(() -> session.playerName() + " is back on " + session.targetServer());
                 session.transition(Phase.SUCCESS, finishedAt);
                 return;
             }
+            // They are staying with us after all, so start talking to them again.
+            freezeHold.resume(playerId);
             if (status == ConnectionRequestBuilder.Status.CONNECTION_IN_PROGRESS) {
                 // Not a real failure - do not hold it against the player.
                 session.scheduleAttempt(finishedAt, Math.min(500L, retry.minIntervalMs()));
