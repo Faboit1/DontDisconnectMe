@@ -63,7 +63,7 @@ public final class DisplayController {
                     title.times()));
         }
 
-        renderBossBar(player, session, spec, resolver);
+        renderBossBar(player, session, spec, resolver, now);
     }
 
     private void sendChatIfDue(Player player, ReconnectSession session, PhaseSpec spec,
@@ -134,7 +134,8 @@ public final class DisplayController {
         player.playSound(sound.toSound(), Sound.Emitter.self());
     }
 
-    private void renderBossBar(Player player, ReconnectSession session, PhaseSpec spec, TagResolver resolver) {
+    private void renderBossBar(Player player, ReconnectSession session, PhaseSpec spec,
+                               TagResolver resolver, long now) {
         PhaseSpec.BossBarSpec config = spec.bossBar();
         if (!config.enabled() || Text.isBlank(config.text())) {
             clearBossBar(player, session);
@@ -142,7 +143,7 @@ public final class DisplayController {
         }
 
         Component name = Text.parse(config.text(), resolver);
-        float progress = progressFor(session, config);
+        float progress = progressFor(session, config, now);
 
         BossBar bar = session.bossBar();
         if (bar == null) {
@@ -157,8 +158,7 @@ public final class DisplayController {
         bar.progress(progress);
     }
 
-    private float progressFor(ReconnectSession session, PhaseSpec.BossBarSpec config) {
-        long now = System.currentTimeMillis();
+    private float progressFor(ReconnectSession session, PhaseSpec.BossBarSpec config, long now) {
         return switch (config.progressMode()) {
             case RETRY_COUNTDOWN -> {
                 long remaining = session.nextAttemptAt() - now;

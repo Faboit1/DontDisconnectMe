@@ -125,6 +125,10 @@ public final class ServerWatcher {
     }
 
     private void ping(Tracked entry, WatcherSpec current, long now) {
+        // Stamped up front so a server that cannot be pinged at all is still
+        // only reconsidered once per interval rather than on every tick.
+        entry.lastCheckAt = now;
+
         Optional<RegisteredServer> server = proxy.getServer(entry.name);
         if (server.isEmpty()) {
             // The server was removed from velocity.toml - stop pretending we know.
@@ -134,7 +138,6 @@ public final class ServerWatcher {
         if (!entry.pingInFlight.compareAndSet(false, true)) {
             return;
         }
-        entry.lastCheckAt = now;
         long startedAt = System.currentTimeMillis();
         server.get().ping()
                 .orTimeout(current.pingTimeoutMs(), TimeUnit.MILLISECONDS)
