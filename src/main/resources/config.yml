@@ -285,6 +285,17 @@ queue:
 #    max-protocol  only play for clients <= this protocol (0 = any)
 #  Handy protocol numbers: 1.18 = 757, 1.20.1 = 763, 1.21 = 767,
 #  1.21.4 = 769, 1.21.5 = 770, 1.21.8 = 772
+#
+#  Each phase can also silence what is already playing before its own
+#  sounds start, so a disc is never layered on top of the game's
+#  background music or the previous phase's disc:
+#
+#    stop-sounds-first:
+#      - MUSIC     # the game's own background music
+#      - RECORD    # music discs, including ours
+#
+#  Any sound source is allowed, or ALL to stop absolutely everything.
+#  The equivalent of running /stopsound <player> music for them.
 # --------------------------------------------------------------------
 phases:
 
@@ -315,6 +326,7 @@ phases:
       overlay: PROGRESS
       progress: 1.0
       progress-mode: STATIC
+    stop-sounds-first: []
     sounds:
       - key: "minecraft:entity.enderman.teleport"
         source: MASTER
@@ -364,6 +376,10 @@ phases:
       # RETRY_COUNTDOWN -> drains between retries
       # QUEUE           -> fills as you move up the queue
       progress-mode: RETRY_COUNTDOWN
+    # Nothing else should be playing under the restart screen.
+    stop-sounds-first:
+      - MUSIC
+      - RECORD
     sounds:
       # Otherside. Requires 1.18+, so older clients simply hear nothing.
       - key: "minecraft:music_disc.otherside"
@@ -414,6 +430,10 @@ phases:
       overlay: PROGRESS
       progress: 0.0
       progress-mode: QUEUE
+    # Cuts Otherside off before Lava Chicken starts.
+    stop-sounds-first:
+      - MUSIC
+      - RECORD
     sounds:
       # Lava Chicken (Hyper Potions). Requires 1.21.5+.
       - key: "minecraft:music_disc.lava_chicken"
@@ -464,6 +484,10 @@ phases:
       overlay: PROGRESS
       progress: 1.0
       progress-mode: STATIC
+    # Silence the queue music the instant they land.
+    stop-sounds-first:
+      - MUSIC
+      - RECORD
     sounds:
       - key: "minecraft:entity.player.levelup"
         source: MASTER
@@ -503,6 +527,9 @@ phases:
       overlay: PROGRESS
       progress: 1.0
       progress-mode: STATIC
+    stop-sounds-first:
+      - MUSIC
+      - RECORD
     sounds:
       - key: "minecraft:entity.villager.no"
         source: MASTER

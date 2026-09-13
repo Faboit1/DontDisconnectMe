@@ -92,9 +92,24 @@ they wait. A tiny limbo works best
 [LimboAPI](https://github.com/Elytrium/LimboAPI)), but a lobby with a small void
 world is fine.
 
-It is worth listing a server in `hold.servers` either way: it is the fallback if
-`FREEZE` is unavailable, and where players are put down if the plugin eventually
-gives up on them.
+It is worth listing a server in `hold.servers` either way. It is the fallback if
+`FREEZE` is unavailable, where players are put down if the plugin eventually
+gives up on them, and — see below — the only way to catch players who *join*
+during an outage.
+
+### Players who join while a server is down
+
+Holding someone in place only works if there is something in place to hold: a
+client that has never been in a world has nothing on screen to keep, and
+freezing it would leave them staring at a loading screen. So a player who logs
+in (or rejoins after an accidental disconnect) while their server is down is
+sent to a **hold server** instead, and gets the same restart screen, music and
+downtime timer there until the server is back — at which point they are pulled
+in with everyone else.
+
+This is the one case that genuinely needs a limbo or lobby in `hold.servers`.
+Without one they are simply told the server is unavailable, and the plugin warns
+you about it in the log.
 
 ### One backend setting you probably need to change
 
@@ -178,7 +193,8 @@ All configurable — the permission names above are just the defaults.
 * **`reconnect`** — the instant retry, the patient loop, optional exponential
   backoff, and when to give up.
 * **`queue`** — batch size, interval, start delay, priority permissions.
-* **`phases`** — every screen and sound, per phase (see below).
+* **`phases`** — every screen and sound, per phase, including what each one
+  silences before it starts (see below).
 * **`servers`** — per-server overrides, deep-merged over everything above.
 
 ### Per-server overrides
@@ -227,9 +243,26 @@ how the default config ships **Lava Chicken** (1.21.5+, protocol 770) with a
 plain beacon chime as the fallback for older clients. Handy numbers: 1.18 = 757,
 1.20.1 = 763, 1.21 = 767, 1.21.4 = 769, 1.21.5 = 770, 1.21.8 = 772.
 
-Anything the plugin started with `stop-on-exit: true` is stopped when the phase
-ends, and `reconnect.stop-music-on-success` stops all of it the moment the
-player is back on their server.
+#### Only one thing plays at a time
+
+Each phase can silence whatever is already playing before its own sounds start,
+which is the equivalent of running `/stopsound <player> music` for them:
+
+```yaml
+stop-sounds-first:
+  - MUSIC     # the game's own background music
+  - RECORD    # music discs, including ours
+```
+
+Any sound source works, or `ALL` to stop absolutely everything. By default every
+phase that plays music silences `MUSIC` and `RECORD` first, so the restart disc
+never starts underneath the game's background music, Lava Chicken cuts Otherside
+off rather than layering on it, and landing back on your server kills the queue
+music immediately.
+
+On top of that, anything the plugin started with `stop-on-exit: true` is stopped
+by name when its phase ends, and `reconnect.stop-music-on-success` stops all of
+it the moment the player is back.
 
 ### Placeholders
 

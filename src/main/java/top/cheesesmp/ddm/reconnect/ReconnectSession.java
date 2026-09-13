@@ -49,6 +49,8 @@ public final class ReconnectSession {
     private volatile long queueEtaMs;
     private volatile BossBar bossBar;
 
+    /** Set when a phase starts, cleared by the display once it has set it up. */
+    private volatile boolean phaseEntered = true;
     /** Next play time per sound of the current phase; aligned with its sound list. */
     private volatile long[] soundSchedule = new long[0];
     /** Sound keys started by this session that must be stopped again later. */
@@ -294,9 +296,21 @@ public final class ReconnectSession {
         }
         phase = next;
         phaseStartedAt = now;
+        phaseEntered = true;
         nextChatAt = now;
         nextDisplayAt = now;
         scheduleSoundsFor(profile.phase(next), now);
+        return true;
+    }
+
+    /**
+     * @return true exactly once per phase, for the first display update of it
+     */
+    public boolean consumePhaseEntered() {
+        if (!phaseEntered) {
+            return false;
+        }
+        phaseEntered = false;
         return true;
     }
 
