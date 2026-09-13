@@ -6,6 +6,7 @@ group = "top.cheesesmp"
 version = "1.0.0"
 
 val velocityVersion = "3.4.0"
+val nettyVersion = "4.2.7.Final"
 
 repositories {
     mavenCentral()
@@ -20,9 +21,13 @@ dependencies {
 
     // Shipped with Velocity at runtime - never shaded.
     compileOnly("org.yaml:snakeyaml:1.33")
+    // Only needed to hold a player on the proxy; Velocity provides netty at runtime.
+    compileOnly("io.netty:netty-transport:$nettyVersion")
+    compileOnly("io.netty:netty-common:$nettyVersion")
 
     testImplementation("com.velocitypowered:velocity-api:$velocityVersion")
     testImplementation("org.yaml:snakeyaml:1.33")
+    testImplementation("io.netty:netty-transport:$nettyVersion")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

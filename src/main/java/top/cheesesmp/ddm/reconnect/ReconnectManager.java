@@ -22,7 +22,10 @@ import top.cheesesmp.ddm.config.PluginConfig;
 import top.cheesesmp.ddm.config.QueueSpec;
 import top.cheesesmp.ddm.config.ReconnectSpec;
 import top.cheesesmp.ddm.config.ServerProfile;
+import top.cheesesmp.ddm.config.HoldSpec;
 import top.cheesesmp.ddm.display.DisplayController;
+import top.cheesesmp.ddm.hold.FreezeHold;
+import top.cheesesmp.ddm.hold.HoldServers;
 import top.cheesesmp.ddm.queue.ReleaseQueue;
 import top.cheesesmp.ddm.util.Placeholders;
 import top.cheesesmp.ddm.util.Text;
@@ -41,6 +44,7 @@ public final class ReconnectManager {
     private final ServerWatcher watcher;
     private final ReleaseQueue queue;
     private final DisplayController display;
+    private final FreezeHold freezeHold;
 
     private final Map<UUID, ReconnectSession> sessions = new ConcurrentHashMap<>();
     private final Map<UUID, Memory> memories = new ConcurrentHashMap<>();
@@ -55,13 +59,15 @@ public final class ReconnectManager {
     }
 
     public ReconnectManager(ProxyServer proxy, Logger logger, Supplier<PluginConfig> config,
-                            ServerWatcher watcher, ReleaseQueue queue, DisplayController display) {
+                            ServerWatcher watcher, ReleaseQueue queue, DisplayController display,
+                            FreezeHold freezeHold) {
         this.proxy = proxy;
         this.logger = logger;
         this.config = config;
         this.watcher = watcher;
         this.queue = queue;
         this.display = display;
+        this.freezeHold = freezeHold;
     }
 
     /**
@@ -159,17 +165,39 @@ public final class ReconnectManager {
         }
     }
 
-    /** Called when the player runs /server themselves, or an admin cancels. */
-    public void cancel(UUID playerId) {
+    /**
+     * Ends a session without standing the player down, for when something else
+     * is already moving them - a manual {@code /server}, for instance. The hold
+     * is handed back as soon as they land.
+     */
+    public void cancelQuietly(UUID playerId) {
         ReconnectSession session = sessions.get(playerId);
         if (session != null) {
             endSession(session, proxy.getPlayer(playerId).orElse(null), false);
         }
     }
 
+    /** Called when an admin cancels, or a session is abandoned. */
+    public void cancel(UUID playerId) {
+        ReconnectSession session = sessions.get(playerId);
+        if (session == null) {
+            return;
+        }
+        Player player = proxy.getPlayer(playerId).orElse(null);
+        endSession(session, player, false);
+        // They asked to stop, so do not leave them held with nothing to do.
+        standDown(session, player, false, Component.empty());
+    }
+
     private void endSession(ReconnectSession session, Player player, boolean remember) {
         sessions.remove(session.playerId());
         queue.remove(session.playerId());
+        // Only hand the connection back to Velocity once the player is somewhere
+        // it can disconnect them from. Releasing a held player who is attached to
+        // nothing would stop their keep-alives and time them out.
+        if (player == null || player.getCurrentServer().isPresent()) {
+            freezeHold.release(session.playerId());
+        }
         if (player != null) {
             display.clearAll(player, session, session.profile().reconnect().extraStopKeys());
         }
@@ -190,6 +218,7 @@ public final class ReconnectManager {
         for (ReconnectSession session : List.copyOf(sessions.values())) {
             endSession(session, proxy.getPlayer(session.playerId()).orElse(null), false);
         }
+        freezeHold.releaseAll();
         queue.clear();
         memories.clear();
     }
@@ -209,18 +238,44 @@ public final class ReconnectManager {
     public void tick() {
         long now = System.currentTimeMillis();
         watcher.tick(now);
-        for (ReconnectSession session : List.copyOf(sessions.values())) {
+        freezeHold.tickKeepAlive(now, config.get().defaultProfile().hold().keepAliveIntervalMs());
+
+        List<ReconnectSession> live = List.copyOf(sessions.values());
+        for (ReconnectSession session : live) {
             try {
-                tickSession(session, now);
+                advanceSession(session, now);
             } catch (RuntimeException ex) {
                 logger.warn("Error while ticking reconnect session for {}", session.playerName(), ex);
             }
         }
         releaseQueues(now);
+
+        // Read every queue position only after the whole tick has settled,
+        // otherwise the first player to be queued is told the queue holds one
+        // person and the last is told it holds five.
+        for (ReconnectSession session : live) {
+            if (sessions.containsKey(session.playerId()) && session.queued()) {
+                refreshQueueState(session);
+            }
+        }
+
+        // Render only once every session has settled, so that the queue sizes
+        // and positions everyone is shown in a tick agree with each other.
+        for (ReconnectSession session : live) {
+            if (!sessions.containsKey(session.playerId())) {
+                continue;
+            }
+            try {
+                proxy.getPlayer(session.playerId()).ifPresent(player ->
+                        display.update(player, session, placeholders(session, now), now));
+            } catch (RuntimeException ex) {
+                logger.warn("Error while updating the display for {}", session.playerName(), ex);
+            }
+        }
         pruneMemories(now);
     }
 
-    private void tickSession(ReconnectSession session, long now) {
+    private void advanceSession(ReconnectSession session, long now) {
         Optional<Player> online = proxy.getPlayer(session.playerId());
         if (online.isEmpty()) {
             // They gave up and left; remember it briefly in case they come back.
@@ -244,10 +299,6 @@ public final class ReconnectManager {
             case RECONNECTING -> tickReconnecting(session, player, now);
             case SUCCESS, FAILED -> tickTerminal(session, player, now);
         }
-
-        if (sessions.containsKey(session.playerId())) {
-            display.update(player, session, placeholders(session, now), now);
-        }
     }
 
     /**
@@ -260,14 +311,10 @@ public final class ReconnectManager {
         session.queueState(1, 1, 0L);
         if (wanted.terminal()) {
             tickTerminal(session, player, now);
-            if (!sessions.containsKey(session.playerId())) {
-                return;
-            }
         } else if (now >= session.nextAttemptAt()) {
             // Keep the retry countdown ticking so the preview looks real.
             session.scheduleAttempt(now, session.profile().reconnect().retry().intervalMs());
         }
-        display.update(player, session, placeholders(session, now), now);
     }
 
     private void tickKicked(ReconnectSession session, Player player, long now) {
@@ -355,9 +402,6 @@ public final class ReconnectManager {
             queue.enqueue(session.targetServer(), session.playerId(),
                     priorityOf(player, queueSpec), session.startedAt());
             session.queued(true);
-            // Fill the placeholders in straight away, so the message this phase
-            // sends on entry already shows a real position.
-            refreshQueueState(session);
         }
         debug(() -> session.playerName() + " is queued for " + session.targetServer()
                 + (session.queued() ? "" : " (bypassing the queue)"));
@@ -384,7 +428,6 @@ public final class ReconnectManager {
                 queue.enqueue(session.targetServer(), session.playerId(),
                         priorityOf(player, session.profile().queue()), session.startedAt());
             }
-            refreshQueueState(session);
             return;
         }
 
@@ -419,16 +462,49 @@ public final class ReconnectManager {
     private void finishTerminal(ReconnectSession session, Player player) {
         boolean failed = session.phase() == Phase.FAILED;
         ReconnectSpec spec = session.profile().reconnect();
+        Component giveUpMessage = Text.isBlank(spec.retry().giveUpMessage())
+                ? Component.text("Could not reconnect you.")
+                : Text.parse(spec.retry().giveUpMessage(),
+                        placeholders(session, System.currentTimeMillis()));
         endSession(session, player, true);
         player.clearTitle();
         player.sendActionBar(Component.empty());
 
-        if (failed && spec.retry().onGiveUp() == ReconnectSpec.GiveUpAction.DISCONNECT) {
-            String message = spec.retry().giveUpMessage();
-            player.disconnect(Text.isBlank(message)
-                    ? Component.text("Could not reconnect you.")
-                    : Text.parse(message, placeholders(session, System.currentTimeMillis())));
+        boolean disconnect = failed
+                && spec.retry().onGiveUp() == ReconnectSpec.GiveUpAction.DISCONNECT;
+        standDown(session, player, disconnect, giveUpMessage);
+    }
+
+    /**
+     * Stops holding a player without stranding them. A held player is attached
+     * to no server at all, so simply releasing them would end their keep-alives
+     * and time them out; they are moved to a hold server instead, and only kept
+     * held when there is nowhere at all to put them.
+     */
+    private void standDown(ReconnectSession session, Player player, boolean disconnect, Component message) {
+        UUID playerId = session.playerId();
+        if (player == null || !freezeHold.isHeld(playerId)) {
+            freezeHold.release(playerId);
+            return;
         }
+        if (disconnect) {
+            freezeHold.release(playerId);
+            player.disconnect(message);
+            return;
+        }
+        Optional<RegisteredServer> fallback = HoldServers.pick(proxy, watcher,
+                session.profile().hold(), session.targetServer(), System.currentTimeMillis());
+        if (fallback.isEmpty()) {
+            // Nowhere to go. Keep holding them - they stay online and can pick a
+            // server themselves - rather than dropping them into a timeout.
+            debug(() -> "keeping " + session.playerName() + " held; no hold server to stand down to");
+            return;
+        }
+        player.createConnectionRequest(fallback.get()).connect().whenComplete((result, error) -> {
+            if (error == null && result != null && result.isSuccessful()) {
+                freezeHold.release(playerId);
+            }
+        });
     }
 
     private boolean checkGiveUp(ReconnectSession session, long now) {
@@ -459,9 +535,10 @@ public final class ReconnectManager {
             session.transition(Phase.FAILED, now);
             return;
         }
-        if (player.getCurrentServer().isEmpty()) {
+        if (player.getCurrentServer().isEmpty() && !freezeHold.isHeld(session.playerId())) {
             // Still mid-handshake from the kick redirect - try again shortly
-            // rather than burning an attempt on a guaranteed failure.
+            // rather than burning an attempt on a guaranteed failure. A held
+            // player legitimately has no server, so this never applies to them.
             session.scheduleAttempt(now, Math.min(500L, retry.minIntervalMs()));
             return;
         }

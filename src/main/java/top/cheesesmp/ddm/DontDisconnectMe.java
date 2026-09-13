@@ -16,8 +16,10 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import top.cheesesmp.ddm.command.DdmCommand;
 import top.cheesesmp.ddm.config.ConfigLoader;
+import top.cheesesmp.ddm.config.HoldSpec;
 import top.cheesesmp.ddm.config.PluginConfig;
 import top.cheesesmp.ddm.display.DisplayController;
+import top.cheesesmp.ddm.hold.FreezeHold;
 import top.cheesesmp.ddm.listener.KickListener;
 import top.cheesesmp.ddm.queue.ReleaseQueue;
 import top.cheesesmp.ddm.reconnect.ReconnectManager;
@@ -50,6 +52,7 @@ public final class DontDisconnectMe {
     private ReleaseQueue queue;
     private ReconnectManager manager;
     private DisplayController display;
+    private FreezeHold freezeHold;
     private ScheduledTask tickTask;
     private long tickIntervalMs;
 
@@ -72,16 +75,18 @@ public final class DontDisconnectMe {
 
         watcher = new ServerWatcher(proxy, config.watcher());
         queue = new ReleaseQueue();
-        display = new DisplayController();
+        freezeHold = new FreezeHold();
+        display = new DisplayController(freezeHold);
         display.debugSink(message -> {
             if (config.general().debug()) {
                 logger.info("[debug] {}", message);
             }
         });
-        manager = new ReconnectManager(proxy, logger, this::config, watcher, queue, display);
+        manager = new ReconnectManager(proxy, logger, this::config, watcher, queue, display, freezeHold);
         applyConfigToComponents();
 
-        proxy.getEventManager().register(this, new KickListener(proxy, logger, this::config, manager, watcher));
+        proxy.getEventManager().register(this,
+                new KickListener(proxy, logger, this::config, manager, watcher, freezeHold));
 
         CommandManager commands = proxy.getCommandManager();
         CommandMeta meta = commands.metaBuilder("ddm")
@@ -91,7 +96,7 @@ public final class DontDisconnectMe {
         commands.register(meta, DdmCommand.create(this, proxy));
 
         scheduleTicker();
-        warnIfNoHoldServer();
+        reportHoldMode();
         logger.info("DontDisconnectMe {} is watching for kicks.", VERSION);
     }
 
@@ -125,7 +130,7 @@ public final class DontDisconnectMe {
         applyConfigToComponents();
         manager.onConfigReloaded();
         scheduleTicker();
-        warnIfNoHoldServer();
+        reportHoldMode();
     }
 
     private void applyConfigToComponents() {
@@ -161,13 +166,30 @@ public final class DontDisconnectMe {
                 .schedule();
     }
 
-    private void warnIfNoHoldServer() {
-        boolean anyConfigured = config.defaultProfile().hold().servers().stream()
+    /**
+     * Says once, at startup and on reload, how players will actually be held -
+     * including when FREEZE was asked for but this Velocity build cannot do it.
+     */
+    private void reportHoldMode() {
+        HoldSpec hold = config.defaultProfile().hold();
+        boolean anyHoldServer = hold.servers().stream()
                 .anyMatch(name -> proxy.getServer(name).isPresent());
-        if (!anyConfigured) {
-            logger.warn("None of the servers in 'hold.servers' exist in velocity.toml. Players kicked from "
-                    + "their only server cannot be held on the proxy and will be disconnected - add a limbo "
-                    + "or lobby server to 'hold.servers'.");
+
+        if (hold.mode() == HoldSpec.Mode.FREEZE) {
+            if (freezeHold.supported()) {
+                logger.info("Players will be held on the proxy itself; no limbo server needed.");
+                return;
+            }
+            logger.warn("Cannot hold players on the proxy on this Velocity build ({}). "
+                            + "Falling back to moving them to a hold server.",
+                    freezeHold.unsupportedReason());
         }
+        if (anyHoldServer) {
+            logger.info("Players will be moved to a hold server while their own server is away.");
+            return;
+        }
+        logger.warn("None of the servers in 'hold.servers' exist in velocity.toml, so players kicked from "
+                + "their only server will be disconnected. Set 'hold.mode: FREEZE' (recommended) or add a "
+                + "limbo or lobby server to 'hold.servers'.");
     }
 }
