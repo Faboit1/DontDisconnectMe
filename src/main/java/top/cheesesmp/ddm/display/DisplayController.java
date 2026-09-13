@@ -11,6 +11,7 @@ import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.title.Title;
 import top.cheesesmp.ddm.config.PhaseSpec;
 import top.cheesesmp.ddm.config.SoundSpec;
+import top.cheesesmp.ddm.hold.FreezeHold;
 import top.cheesesmp.ddm.reconnect.ReconnectSession;
 import top.cheesesmp.ddm.util.Text;
 
@@ -26,7 +27,12 @@ public final class DisplayController {
         void log(String message);
     }
 
+    private final FreezeHold freezeHold;
     private volatile DebugSink debug = message -> { };
+
+    public DisplayController(FreezeHold freezeHold) {
+        this.freezeHold = freezeHold;
+    }
 
     public void debugSink(DebugSink sink) {
         this.debug = sink == null ? message -> { } : sink;
@@ -83,9 +89,11 @@ public final class DisplayController {
         if (sounds.isEmpty()) {
             return;
         }
-        if (player.getCurrentServer().isEmpty()) {
+        if (player.getCurrentServer().isEmpty() && !freezeHold.isHeld(player.getUniqueId())) {
             // Velocity silently drops sounds for a player who is between
             // servers. Leave the schedule alone and play them once they land.
+            // A held player has no server either, but we send their sounds
+            // ourselves, so they are fine.
             return;
         }
         long[] schedule = session.soundSchedule();
@@ -127,10 +135,14 @@ public final class DisplayController {
      * nothing at all, so every sound has to be emitted from the player.
      */
     private void play(Player player, SoundSpec sound) {
+        boolean heldOnProxy = freezeHold.isHeld(player.getUniqueId());
         debug.log("playing " + sound.key().asString() + " for " + player.getUsername()
                 + " (protocol " + player.getProtocolVersion().getProtocol()
-                + ", server " + player.getCurrentServer()
-                .map(connection -> connection.getServerInfo().getName()).orElse("none") + ")");
+                + ", " + (heldOnProxy ? "held on proxy" : "server " + player.getCurrentServer()
+                .map(connection -> connection.getServerInfo().getName()).orElse("none")) + ")");
+        if (heldOnProxy && freezeHold.playSound(player.getUniqueId(), sound.toSound())) {
+            return;
+        }
         player.playSound(sound.toSound(), Sound.Emitter.self());
     }
 
@@ -194,15 +206,23 @@ public final class DisplayController {
     /** Stops every looping sound this session started - the "music off" switch. */
     public void stopSounds(Player player, ReconnectSession session, List<String> extraKeys) {
         for (Key key : session.drainStoppableSounds()) {
-            player.stopSound(SoundStop.named(key));
+            stop(player, SoundStop.named(key));
         }
         for (String raw : extraKeys) {
             try {
-                player.stopSound(SoundStop.named(Key.key(raw.trim())));
+                stop(player, SoundStop.named(Key.key(raw.trim())));
             } catch (net.kyori.adventure.key.InvalidKeyException ignored) {
                 // A bad key in the config should never break a reconnect.
             }
         }
+    }
+
+    /** Mirrors {@link #play}: a held player's stop packets are sent by us. */
+    private void stop(Player player, SoundStop stop) {
+        if (freezeHold.isHeld(player.getUniqueId()) && freezeHold.stopSound(player.getUniqueId(), stop)) {
+            return;
+        }
+        player.stopSound(stop);
     }
 
     /** Wipes anything still on screen when a session ends early. */

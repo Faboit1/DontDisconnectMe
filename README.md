@@ -4,10 +4,16 @@ A Velocity plugin that keeps players on your network when a backend server
 restarts, crashes or drops them — instead of dumping them back at the server
 list.
 
-When a server goes away, players are parked on a hold server, told why, shown a
-live "unreachable for 01:23" timer with Otherside playing, and then trickled
-back in a few at a time once the server is healthy again — with Lava Chicken
-playing while they wait their turn, and the music stopping the moment they land.
+**Players do not go anywhere.** When their server dies they are held on the
+proxy itself: their client is never told, so it keeps the world it already has
+on screen — the terrain, their inventory, everything exactly where it was. They
+simply cannot interact, because there is no longer a server behind the proxy to
+respond to them. Meanwhile they get the kick reason in the action bar, a live
+"unreachable for 01:23" timer with Otherside playing, and Lava Chicken while
+they wait their turn to go back. The first thing their client reloads is the
+real server, once it is healthy again.
+
+No limbo server, no backend plugin, nothing else to run.
 
 Every message, sound, title, boss bar and timing is configurable, globally and
 per server.
@@ -18,7 +24,7 @@ per server.
 
 | Phase | When | Default behaviour |
 |---|---|---|
-| `kicked` | the instant we take the kick over | action bar with the kick reason, enderman-teleport blip, one immediate retry |
+| `kicked` | the instant we take the kick over | player is held in place, action bar with the kick reason, enderman-teleport blip, one immediate retry |
 | `waiting` | the server is unreachable | `Server Restarting` title, live downtime clock, boss bar, **Otherside** on loop, a retry blip every 4s |
 | `reconnecting` | the server is healthy again | `Reconnecting` title, queue position, **Lava Chicken** (Hyper Potions) |
 | `success` | they made it back | all plugin music stopped, welcome-back message, level-up sound |
@@ -50,13 +56,45 @@ rather than going to the back.
 ## Requirements
 
 * **Velocity 3.4.0+** and **Java 17+**
-* **A hold server.** Velocity cannot keep a player attached to the proxy with no
-  backend, so a player kicked from their only server has to land *somewhere*. A
-  tiny limbo works best ([NanoLimbo](https://github.com/BoomerCraft/NanoLimbo),
-  [LimboAPI](https://github.com/Elytrium/LimboAPI)), but a lobby with a small
-  void world is fine. List them in `hold.servers`.
-  Without one, the plugin can only help players who were kicked while *switching*
-  servers, and it will warn you on startup.
+* Nothing else. Holding players on the proxy needs no limbo server and no
+  backend-side plugin.
+
+### How players are held
+
+`hold.mode` picks between two approaches:
+
+**`FREEZE` (default)** — the player stays on the proxy. Nothing is sent to their
+client, so it keeps rendering the world it already has; when their server comes
+back they are connected straight to it and that is the only reload they see.
+
+Velocity's public API has no way to say *"keep this player attached to nothing"*,
+so this is the one part of the plugin that reaches into proxy internals: a netty
+handler on the player's channel drops the disconnect packet Velocity tries to
+send and refuses the close that follows, and keep-alives and sounds are written
+to the client directly. Everything else — chat, action bar, title, boss bar —
+uses the ordinary public API.
+
+That makes `FREEZE` the part most likely to need attention after a Velocity
+update, so it fails safe: all of it is resolved once at startup, and if anything
+has moved the plugin logs a warning and falls back to `SERVER` automatically.
+Check your log on startup — it says which one you got:
+
+```
+[dontdisconnectme]: Players will be held on the proxy itself; no limbo server needed.
+```
+
+**`SERVER`** — the classic approach: move the player to a limbo or lobby server
+from `hold.servers` and reconnect them from there. Their client reloads into the
+limbo world and then again into the real one. Use this if you would rather not
+depend on proxy internals, or if you want players to have something to do while
+they wait. A tiny limbo works best
+([NanoLimbo](https://github.com/BoomerCraft/NanoLimbo),
+[LimboAPI](https://github.com/Elytrium/LimboAPI)), but a lobby with a small void
+world is fine.
+
+It is worth listing a server in `hold.servers` either way: it is the fallback if
+`FREEZE` is unavailable, and where players are put down if the plugin eventually
+gives up on them.
 
 ### One backend setting you probably need to change
 
@@ -132,7 +170,8 @@ All configurable — the permission names above are just the defaults.
   kicks and "kicked by an operator" pass straight through by default; anything
   matching `restart-reasons` skips the instant retry. `only-reasons` turns it
   into an allow-list if you want to handle timeouts and nothing else.
-* **`hold`** — where players are parked, and what to do when nowhere is available.
+* **`hold`** — `mode` (`FREEZE` or `SERVER`), the keep-alive interval for held
+  players, and the fallback servers.
 * **`watcher`** — how aggressively servers are health-checked, and the
   thresholds that decide up/down. `success-threshold: 2` exists because a server
   answers pings before it accepts logins.
@@ -200,7 +239,7 @@ and accepts:
 | | |
 |---|---|
 | `<player>` `<uuid>` | who |
-| `<server>` `<hold_server>` | where |
+| `<server>` `<hold_server>` | where (`<hold_server>` is empty while held on the proxy) |
 | `<reason>` `<reason_plain>` | why they were kicked (formatted / plain) |
 | `<phase>` | current phase |
 | `<attempt>` `<max_attempts>` | how many tries so far |
@@ -229,8 +268,18 @@ attached.
 
 ## Troubleshooting
 
+**"Cannot hold players on the proxy on this Velocity build"** — the internals
+`FREEZE` relies on have moved, most likely after a Velocity update. The plugin
+has fallen back to `SERVER` mode, so make sure `hold.servers` names a real
+server; please open an issue with the Velocity version from your log.
+
 **"None of the servers in `hold.servers` exist in velocity.toml"** — the names
 must match your `[servers]` section in `velocity.toml` exactly.
+
+**A held player cannot be kicked** — while someone is held, the plugin is
+refusing the disconnects Velocity sends them, so an admin kick will not land
+either. Run `/ddm cancel <player>` first, which stands them down, or wait for
+`reconnect.retry.max-duration-seconds` to expire.
 
 **Players get kicked properly instead of reconnected** — check the kick reason
 against `filters.ignored-reasons`; those patterns match anywhere in the message,

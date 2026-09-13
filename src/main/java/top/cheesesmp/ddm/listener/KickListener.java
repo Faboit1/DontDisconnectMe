@@ -3,6 +3,7 @@ package top.cheesesmp.ddm.listener;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -16,6 +17,8 @@ import top.cheesesmp.ddm.config.FilterSpec;
 import top.cheesesmp.ddm.config.HoldSpec;
 import top.cheesesmp.ddm.config.PluginConfig;
 import top.cheesesmp.ddm.config.ServerProfile;
+import top.cheesesmp.ddm.hold.FreezeHold;
+import top.cheesesmp.ddm.hold.HoldServers;
 import top.cheesesmp.ddm.reconnect.ReconnectManager;
 import top.cheesesmp.ddm.reconnect.ReconnectSession;
 import top.cheesesmp.ddm.util.Placeholders;
@@ -39,14 +42,16 @@ public final class KickListener {
     private final Supplier<PluginConfig> config;
     private final ReconnectManager manager;
     private final ServerWatcher watcher;
+    private final FreezeHold freezeHold;
 
     public KickListener(ProxyServer proxy, Logger logger, Supplier<PluginConfig> config,
-                        ReconnectManager manager, ServerWatcher watcher) {
+                        ReconnectManager manager, ServerWatcher watcher, FreezeHold freezeHold) {
         this.proxy = proxy;
         this.logger = logger;
         this.config = config;
         this.manager = manager;
         this.watcher = watcher;
+        this.freezeHold = freezeHold;
     }
 
     @Subscribe(priority = LATE)
@@ -80,6 +85,20 @@ public final class KickListener {
         }
         watcher.markInterest(serverName, now);
 
+        // Preferred path: keep them right where they are, on the proxy, with
+        // their client none the wiser. Taking the connection over has to happen
+        // now, before Velocity acts on this event's result.
+        if (profile.hold().mode() == HoldSpec.Mode.FREEZE && freezeHold.hold(player)) {
+            // They are on the proxy itself, so there is no hold server to name.
+            manager.start(player, serverName, reason, restartMode, false).holdServer("");
+            // Whatever result we set, the disconnect it produces is dropped by
+            // the hold. Its text only reaches the console, so make it read
+            // sensibly there instead of looking like the player quit.
+            event.setResult(KickedFromServerEvent.DisconnectPlayer.create(
+                    Component.text(profile.hold().consoleReason())));
+            return;
+        }
+
         // Kicked mid-transfer: they still have a server, so nothing has to move.
         if (event.kickedDuringServerConnect() && player.getCurrentServer().isPresent()) {
             String currentServer = player.getCurrentServer()
@@ -93,7 +112,7 @@ public final class KickListener {
             return;
         }
 
-        Optional<RegisteredServer> hold = pickHoldServer(profile.hold(), serverName, now);
+        Optional<RegisteredServer> hold = HoldServers.pick(proxy, watcher, profile.hold(), serverName, now);
         if (hold.isPresent()) {
             String holdName = hold.get().getServerInfo().getName();
             TagResolver resolver = kickPlaceholders(current, player, serverName, holdName, reason);
@@ -124,24 +143,14 @@ public final class KickListener {
         }
     }
 
-    /** First configured hold server that exists, is not the dead one, and looks alive. */
-    private Optional<RegisteredServer> pickHoldServer(HoldSpec hold, String kickedFrom, long now) {
-        for (String candidate : hold.servers()) {
-            if (candidate.equalsIgnoreCase(kickedFrom)) {
-                continue;
-            }
-            Optional<RegisteredServer> server = proxy.getServer(candidate);
-            if (server.isEmpty()) {
-                continue;
-            }
-            String name = server.get().getServerInfo().getName();
-            watcher.markInterest(name, now);
-            if (hold.onlyOnline() && watcher.health(name).offline()) {
-                continue;
-            }
-            return server;
-        }
-        return Optional.empty();
+    /**
+     * The moment a player is on a backend again - whether we put them there or
+     * they picked a server themselves - the hold has done its job and must be
+     * handed back, or Velocity could never disconnect them again.
+     */
+    @Subscribe
+    public void onServerConnected(ServerConnectedEvent event) {
+        freezeHold.release(event.getPlayer().getUniqueId());
     }
 
     @Subscribe
@@ -169,7 +178,8 @@ public final class KickListener {
             return;
         }
         if (!requested.equalsIgnoreCase(session.targetServer())) {
-            manager.cancel(session.playerId());
+            // They are already on their way somewhere, so just drop the session.
+            manager.cancelQuietly(session.playerId());
         }
     }
 

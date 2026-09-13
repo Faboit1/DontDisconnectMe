@@ -88,16 +88,43 @@ filters:
 
 # --------------------------------------------------------------------
 #  Where do we park the player while their server is away?
-#
-#  Velocity cannot hold a player "on the proxy" with no backend, so we
-#  need somewhere to put them. A tiny limbo/lobby server is ideal
-#  (NanoLimbo, LimboAPI, or just a lobby with a small void world).
-#
-#  If the player was kicked while SWITCHING servers they simply stay
-#  where they already were and no hold server is needed.
 # --------------------------------------------------------------------
 hold:
-  # Tried in order. The server the player was kicked from is skipped.
+  # FREEZE (default)
+  #   Hold the player on the proxy itself. Nothing is sent to their client,
+  #   so it keeps the world it already has on screen - they still see the
+  #   terrain, their inventory and the last position of everything. They
+  #   just cannot interact, because there is no server behind the proxy to
+  #   respond. When their server returns they are connected straight back
+  #   to it and that is the first reload their client does.
+  #   No limbo server, no backend plugin, nothing else to run.
+  #
+  # SERVER
+  #   The classic approach: move the player to a limbo or lobby server from
+  #   'servers' below and reconnect them from there. Their client reloads
+  #   into the limbo world and then again into the real one.
+  #
+  # FREEZE needs to reach into Velocity's internals, because its public API
+  # has no way to say "keep this player attached to nothing". That is done
+  # defensively: if the running Velocity build has moved anything, the
+  # plugin logs a warning and falls back to SERVER automatically, so a proxy
+  # update can never strand your players.
+  mode: FREEZE
+
+  freeze:
+    # How often a held client is sent a keep-alive. Nothing else is talking
+    # to it and vanilla drops a connection that has been silent for 30s, so
+    # this needs to stay comfortably under that.
+    keep-alive-interval-ms: 10000
+    # Velocity logs a line when it thinks a player was disconnected. The
+    # player never sees this (the packet is dropped) - it is only there to
+    # stop your console looking like everyone quit.
+    console-reason: "held by DontDisconnectMe"
+
+  # Used when mode is SERVER, and as the fallback when FREEZE is not
+  # available. Tried in order; the server the player was kicked from is
+  # skipped. A tiny limbo works best (NanoLimbo, LimboAPI), but a lobby
+  # with a small void world is fine.
   servers:
     - "limbo"
     - "lobby"
