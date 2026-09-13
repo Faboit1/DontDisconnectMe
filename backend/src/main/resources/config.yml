@@ -1,0 +1,7 @@
+# How long after a player drops we keep their entity id for them.
+# They only need it for as long as the proxy will keep trying to reconnect
+# them, so this can comfortably match the proxy's give-up timeout.
+remember-seconds: 60
+
+# Logs what happens to each reconnecting player's entity id.
+debug: false

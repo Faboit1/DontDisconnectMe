@@ -64,6 +64,8 @@ public final class FreezeHold {
     private final MethodHandle getConnectedServer;
     private final MethodHandle getEntityId;
     private final Class<?> disconnectPacketType;
+    private final Class<?> joinGamePacketType;
+    private final Class<?> respawnPacketType;
     private final Constructor<?> keepAliveCtor;
     private final Method setRandomId;
     private final Constructor<?> soundCtor;
@@ -78,15 +80,19 @@ public final class FreezeHold {
         private final Object connection;
         /** The player's entity id on the dead server, needed to emit sounds. */
         private final Integer entityId;
+        /** When we took the connection over - the moment the backend lost them. */
+        private final long heldAt;
         private volatile long nextKeepAliveAt;
         /** Set while a reconnect is in flight, when the client is mid-handover. */
         private volatile boolean quiet;
 
-        private Held(Channel channel, HoldGuard guard, Object connection, Integer entityId) {
+        private Held(Channel channel, HoldGuard guard, Object connection, Integer entityId,
+                     long heldAt) {
             this.channel = channel;
             this.guard = guard;
             this.connection = connection;
             this.entityId = entityId;
+            this.heldAt = heldAt;
         }
     }
 
@@ -100,6 +106,8 @@ public final class FreezeHold {
         MethodHandle connectedServerHandle = null;
         MethodHandle entityIdHandle = null;
         Class<?> disconnectType = null;
+        Class<?> joinGameType = null;
+        Class<?> respawnType = null;
         Constructor<?> keepAlive = null;
         Method randomId = null;
         Constructor<?> sound = null;
@@ -122,6 +130,8 @@ public final class FreezeHold {
             entityIdHandle = lookup.unreflect(serverConnection.getMethod("getEntityId"));
 
             disconnectType = Class.forName(PACKET + "DisconnectPacket");
+            joinGameType = Class.forName(PACKET + "JoinGamePacket");
+            respawnType = Class.forName(PACKET + "RespawnPacket");
 
             Class<?> keepAliveType = Class.forName(PACKET + "KeepAlivePacket");
             keepAlive = keepAliveType.getConstructor();
@@ -146,6 +156,8 @@ public final class FreezeHold {
         this.getConnectedServer = connectedServerHandle;
         this.getEntityId = entityIdHandle;
         this.disconnectPacketType = disconnectType;
+        this.joinGamePacketType = joinGameType;
+        this.respawnPacketType = respawnType;
         this.keepAliveCtor = keepAlive;
         this.setRandomId = randomId;
         this.soundCtor = sound;
@@ -167,6 +179,20 @@ public final class FreezeHold {
     }
 
     /**
+     * How long this player has been held - which is how long their server has
+     * been without them, and so the window the backend's entity id has to
+     * survive. Not the same as how long the reconnect has been going on: a
+     * player kicked repeatedly resumes their earlier session, and that clock
+     * keeps running across all of it.
+     *
+     * @return the hold's age, or {@link Long#MAX_VALUE} if they are not held
+     */
+    public long heldForMs(UUID playerId, long now) {
+        Held entry = held.get(playerId);
+        return entry == null ? Long.MAX_VALUE : Math.max(0L, now - entry.heldAt);
+    }
+
+    /**
      * Stops writing to a held player while we reconnect them.
      *
      * <p>Since 1.20.2 a server switch takes the client through the
@@ -180,6 +206,21 @@ public final class FreezeHold {
         Held entry = held.get(playerId);
         if (entry != null) {
             entry.quiet = true;
+        }
+    }
+
+    /**
+     * EXPERIMENTAL. Drops the join-game and respawn packets Velocity sends when
+     * handing the player to a backend, which is what makes the client throw its
+     * world away and show the loading screen. Suppressing them should leave the
+     * world on screen and make the switch look like an ordinary teleport - but
+     * the client is then holding an entity id the new server knows nothing
+     * about, so this is only safe once entity continuity is solved.
+     */
+    public void suppressWorldReset(UUID playerId, boolean suppress) {
+        Held entry = held.get(playerId);
+        if (entry != null) {
+            entry.guard.suppressWorldReset = suppress;
         }
     }
 
@@ -266,11 +307,12 @@ public final class FreezeHold {
                 entityId = (Integer) getEntityId.invoke(backend);
             }
 
-            HoldGuard guard = new HoldGuard(disconnectPacketType);
+            HoldGuard guard = new HoldGuard(disconnectPacketType, joinGamePacketType, respawnPacketType);
             // Outbound events start at the tail, so the tail-most handler is the
             // first to see the disconnect packet and the close that follows it.
             channel.pipeline().addLast(GUARD_NAME, guard);
-            held.put(player.getUniqueId(), new Held(channel, guard, connection, entityId));
+            held.put(player.getUniqueId(),
+                    new Held(channel, guard, connection, entityId, System.currentTimeMillis()));
             return true;
         } catch (Throwable ex) {
             return false;
@@ -375,10 +417,16 @@ public final class FreezeHold {
     private static final class HoldGuard extends ChannelOutboundHandlerAdapter {
 
         private final Class<?> disconnectPacketType;
+        private final Class<?> joinGamePacketType;
+        private final Class<?> respawnPacketType;
         private volatile boolean armed = true;
+        private volatile boolean suppressWorldReset;
 
-        private HoldGuard(Class<?> disconnectPacketType) {
+        private HoldGuard(Class<?> disconnectPacketType, Class<?> joinGamePacketType,
+                          Class<?> respawnPacketType) {
             this.disconnectPacketType = disconnectPacketType;
+            this.joinGamePacketType = joinGamePacketType;
+            this.respawnPacketType = respawnPacketType;
         }
 
         private void disarm() {
@@ -388,6 +436,12 @@ public final class FreezeHold {
         @Override
         public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
             if (armed && disconnectPacketType.isInstance(msg)) {
+                io.netty.util.ReferenceCountUtil.release(msg);
+                promise.setSuccess();
+                return;
+            }
+            if (suppressWorldReset
+                    && (joinGamePacketType.isInstance(msg) || respawnPacketType.isInstance(msg))) {
                 io.netty.util.ReferenceCountUtil.release(msg);
                 promise.setSuccess();
                 return;

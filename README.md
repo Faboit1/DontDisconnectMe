@@ -56,8 +56,10 @@ rather than going to the back.
 ## Requirements
 
 * **Velocity 3.4.0+** and **Java 17+**
-* Nothing else. Holding players on the proxy needs no limbo server and no
-  backend-side plugin.
+* Nothing else required. Holding players on the proxy needs no limbo server and
+  no backend-side plugin.
+* **Optional:** `DontDisconnectMe-Backend` on your Paper/Folia servers removes
+  the "Loading terrain" flash when players come back — see below.
 
 ### How players are held
 
@@ -286,12 +288,64 @@ Durations render as `1m 23s`, `01:23` or `1 minute, 23 seconds` depending on
 
 ---
 
+## Coming back without a loading screen
+
+By default a reconnect still costs the player a brief "Loading terrain" flash.
+That flash is one packet: the **join-game** the proxy has to send when handing a
+player to a backend. It exists to tell the client its entity id has changed —
+and it is also what makes the client throw its world away.
+
+Install **`DontDisconnectMe-Backend`** on your Paper or Folia servers and that
+packet becomes unnecessary. The companion plugin remembers the entity id of
+anyone who drops and hands the same id straight back if they return within
+`remember-seconds`. Nothing has changed from the client's point of view, so the
+proxy skips the join-game and the player never leaves their world — the server's
+chunks simply stream in underneath.
+
+```
+plugins/DontDisconnectMe-Backend-x.y.z.jar     on each backend
+plugins/DontDisconnectMe-x.y.z.jar             on the proxy
+```
+
+No configuration is needed on either side. The backend announces itself to the
+proxy, and the proxy only skips the loading screen when **all** of these hold:
+
+* the player is being returned to the **same server** they dropped from — a
+  different server means a different world, and the client must reload;
+* that server is running the backend plugin and has announced it;
+* the player has been away less than `hold.seamless.max-away-seconds`, capped by
+  the backend's own `remember-seconds` — whichever is stricter wins.
+
+Anything else falls through to an ordinary reconnect, which is correct if not
+pretty. If the backend reports afterwards that it could **not** hand the id back,
+the proxy reconnects the player properly rather than leaving them in a session
+that half works.
+
+### Caveats worth knowing
+
+* This only removes the screen for a **reconnect to the same live server**. A
+  server that actually restarted has none of the player's chunks in memory, so
+  there is nothing to skip — they get a real login either way.
+* A cross-dimension move always reloads the world. That is vanilla behaviour and
+  no proxy can avoid it.
+* Set `remember-seconds` on the backend at or above the proxy's
+  `hold.seamless.max-away-seconds` so the two agree.
+* On a server build the plugin cannot reach into, it says so in the log and
+  everyone reconnects the ordinary way. It never guesses.
+
 ## Building
 
 ```bash
-./gradlew build     # compiles, runs the tests, produces the jar
+./gradlew build     # compiles, runs the tests, produces both jars
 ./gradlew test      # tests only
 ```
+
+Two jars come out:
+
+| Jar | Goes on | Required? |
+|---|---|---|
+| `build/libs/DontDisconnectMe-x.y.z.jar` | the Velocity proxy | yes |
+| `backend/build/libs/DontDisconnectMe-Backend-x.y.z.jar` | each Paper/Folia server | optional |
 
 Every push and pull request is built and tested by GitHub Actions, which uploads
 the jar as a build artifact. Pushing a `v*` tag publishes a release with the jar
@@ -323,6 +377,12 @@ so a broad one like `.*ban.*` will also swallow "banner".
 **No music** — music discs only exist from certain versions (Otherside 1.18+,
 Lava Chicken 1.21.5+) and are gated by `min-protocol`. Turn on `general.debug`
 and the console logs every sound it plays, for whom, and on which server.
+
+**Still seeing a loading screen on reconnect** — install
+`DontDisconnectMe-Backend` (below). With `general.debug` on, the proxy logs a
+line per reconnect saying exactly which condition refused, e.g.
+`seamless check for Bob: enabled=true held=true backendKnown=false ... -> false`
+means the backend plugin has not announced itself on that server yet.
 
 **Nothing at all happens** — turn on `general.debug`. Every ping, state change,
 attempt and queue release is logged.

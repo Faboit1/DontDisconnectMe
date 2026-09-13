@@ -3,10 +3,12 @@ package top.cheesesmp.ddm.listener;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
+import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -19,6 +21,7 @@ import top.cheesesmp.ddm.config.PluginConfig;
 import top.cheesesmp.ddm.config.ServerProfile;
 import top.cheesesmp.ddm.hold.FreezeHold;
 import top.cheesesmp.ddm.hold.HoldServers;
+import top.cheesesmp.ddm.hold.SeamlessCoordinator;
 import top.cheesesmp.ddm.reconnect.ReconnectManager;
 import top.cheesesmp.ddm.reconnect.ReconnectSession;
 import top.cheesesmp.ddm.util.Placeholders;
@@ -164,7 +167,44 @@ public final class KickListener {
      */
     @Subscribe
     public void onServerConnected(ServerConnectedEvent event) {
+        // The join-game packet the client would reload its world for is written
+        // after this fires, so while we are skipping it the guard has to stay in
+        // place. The session hands the hold back when it finishes instead.
+        if (manager.seamless().isAwaitingVerdict(event.getPlayer().getUniqueId())) {
+            return;
+        }
         freezeHold.release(event.getPlayer().getUniqueId());
+    }
+
+    /**
+     * The backend plugin reports whether it managed to hand the player their
+     * previous entity id back. If it could not, and we had already skipped the
+     * client's loading screen, the client is now describing an entity the
+     * server has never heard of - so send them round again properly rather than
+     * leave them subtly broken.
+     */
+    @Subscribe
+    public void onPluginMessage(PluginMessageEvent event) {
+        if (!event.getIdentifier().getId().equals(SeamlessCoordinator.CHANNEL)) {
+            return;
+        }
+        // Ours to read, not the client's.
+        event.setResult(PluginMessageEvent.ForwardResult.handled());
+
+        if (!(event.getSource() instanceof ServerConnection connection)) {
+            return;
+        }
+        Player player = connection.getPlayer();
+        String serverName = connection.getServerInfo().getName();
+        SeamlessCoordinator.Verdict verdict =
+                manager.seamless().handleMessage(player, serverName, event.getData());
+
+        if (verdict == SeamlessCoordinator.Verdict.FRESH) {
+            logger.warn("{} came back to {} on a new entity id after the loading screen was "
+                            + "skipped; reconnecting them properly.",
+                    player.getUsername(), serverName);
+            manager.resyncAfterFailedSkip(player, serverName);
+        }
     }
 
     @Subscribe
