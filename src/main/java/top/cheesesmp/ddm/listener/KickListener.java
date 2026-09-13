@@ -164,6 +164,13 @@ public final class KickListener {
      */
     @Subscribe
     public void onServerConnected(ServerConnectedEvent event) {
+        // The join-game packet that resets the client's world is written after
+        // this fires, so the experiment has to keep the guard in place past it.
+        // The session releases the hold when it finishes instead.
+        if (config.get().profile(event.getServer().getServerInfo().getName())
+                .hold().seamlessExperiment()) {
+            return;
+        }
         freezeHold.release(event.getPlayer().getUniqueId());
     }
 

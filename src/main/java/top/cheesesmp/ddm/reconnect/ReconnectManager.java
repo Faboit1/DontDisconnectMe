@@ -567,6 +567,10 @@ public final class ReconnectManager {
         // It stays quiet until the attempt resolves one way or the other.
         UUID playerId = session.playerId();
         freezeHold.quiet(playerId);
+        if (session.profile().hold().seamlessExperiment()) {
+            freezeHold.suppressWorldReset(playerId, true);
+            debug(() -> "[experiment] suppressing world reset for " + session.playerName());
+        }
         player.createConnectionRequest(target.get()).connect().whenComplete((result, error) -> {
             session.connecting(false);
             long finishedAt = System.currentTimeMillis();

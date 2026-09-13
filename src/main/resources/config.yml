@@ -120,6 +120,13 @@ hold:
     # player never sees this (the packet is dropped) - it is only there to
     # stop your console looking like everyone quit.
     console-reason: "held by DontDisconnectMe"
+    # EXPERIMENTAL, leave this off.
+    # Drops the join-game and respawn packets Velocity sends when handing a
+    # player to a backend - the packets that make the client throw its world
+    # away and show the loading screen. The switch then looks like an ordinary
+    # teleport instead. It is off because the client is left holding an entity
+    # id the new server knows nothing about, which has to be solved first.
+    seamless-experiment: false
 
   # Used when mode is SERVER, and as the fallback when FREEZE is not
   # available. Tried in order; the server the player was kicked from is
