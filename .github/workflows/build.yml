@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon
+
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/test-results/test/
+          if-no-files-found: ignore
+
+      - name: Upload plugin jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: DontDisconnectMe
+          path: build/libs/DontDisconnectMe-*.jar
+          if-no-files-found: error
+
+      # Tagging a commit v1.2.3 publishes that build as a GitHub release.
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/libs/DontDisconnectMe-*.jar
+          generate_release_notes: true

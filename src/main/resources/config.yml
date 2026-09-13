@@ -1,0 +1,578 @@
+# ====================================================================
+#  DontDisconnectMe
+#  Keeps players on the network when a backend server dies, restarts
+#  or kicks them, then eases them back in once it is healthy again.
+#
+#  Every message supports MiniMessage:  https://docs.advntr.dev/minimessage/format.html
+#  Every message supports the placeholders listed under "placeholders"
+#  at the bottom of this file.
+#
+#  Reload in game with:  /ddm reload
+# ====================================================================
+
+# Bump this only if you know what you are doing - it is used to warn
+# you when the plugin ships new options your file does not have yet.
+config-version: 1
+
+general:
+  # Extra logging: every ping, state change, attempt and queue release.
+  debug: false
+  # How often the plugin's internal clock runs, in milliseconds.
+  # Lower = smoother timers, slightly more work. 100-500 is sane.
+  tick-interval-ms: 250
+  # How durations such as <downtime> and <elapsed> are rendered.
+  #   SHORT -> 1m 23s      CLOCK -> 01:23      LONG -> 1 minute, 23 seconds
+  time-format:
+    style: SHORT
+    # Only used by SHORT / LONG.
+    suffix-days: "d"
+    suffix-hours: "h"
+    suffix-minutes: "m"
+    suffix-seconds: "s"
+    # Hide leading zero units (e.g. "23s" instead of "0h 0m 23s").
+    trim-leading-zero-units: true
+    # Show at most this many units (SHORT / LONG only).
+    max-units: 2
+
+# --------------------------------------------------------------------
+#  Which kicks should this plugin take over?
+# --------------------------------------------------------------------
+filters:
+  # If set, only players with this permission are reconnected.
+  # Leave empty to reconnect everybody.
+  require-permission: ""
+
+  # Servers whose kicks are never intercepted (players are kicked normally).
+  ignored-servers: []
+  # If non-empty, ONLY kicks coming from these servers are intercepted.
+  handled-servers: []
+
+  # Kick reasons matched against these Java regexes are NEVER intercepted -
+  # the player is kicked for real. Matching is case-insensitive and done
+  # against the plain text of the kick message with colour codes stripped.
+  # These defaults cover punishments and "you may not join" situations.
+  ignored-reasons:
+    - '.*\bbanned\b.*'
+    - '.*\bban\b.*'
+    - '.*\bblacklisted\b.*'
+    - '.*\bwhitelist(ed)?\b.*'
+    - '.*kicked by an operator.*'
+    - '.*\bidle\b.*'
+    - '.*afk.*'
+    - '.*outdated (client|server).*'
+    - '.*unsupported (client|version).*'
+    - '.*duplicate login.*'
+    - '.*logged in from another location.*'
+
+  # Kick reasons matched by these regexes are treated as "the server is going
+  # down" - the plugin skips the instant retry and goes straight to the
+  # restart screen, which avoids hammering a server that is shutting down.
+  restart-reasons:
+    - '.*restart(ing)?.*'
+    - '.*reboot(ing)?.*'
+    - '.*server clos(ed|ing).*'
+    - '.*shutting down.*'
+    - '.*shutdown.*'
+    - '.*maintenance.*'
+    - '.*updating.*'
+
+  # If non-empty, ONLY kick reasons matching these regexes are intercepted.
+  # Useful if you want to handle timeouts and nothing else, for example:
+  #   only-reasons: ['.*timed out.*', '.*timeout.*', '.*connection reset.*']
+  only-reasons: []
+
+  # A player kicked with no reason at all (raw connection drop / crash).
+  # true  -> reconnect them (recommended)
+  # false -> let the kick through
+  handle-empty-reason: true
+
+# --------------------------------------------------------------------
+#  Where do we park the player while their server is away?
+#
+#  Velocity cannot hold a player "on the proxy" with no backend, so we
+#  need somewhere to put them. A tiny limbo/lobby server is ideal
+#  (NanoLimbo, LimboAPI, or just a lobby with a small void world).
+#
+#  If the player was kicked while SWITCHING servers they simply stay
+#  where they already were and no hold server is needed.
+# --------------------------------------------------------------------
+hold:
+  # Tried in order. The server the player was kicked from is skipped.
+  servers:
+    - "limbo"
+    - "lobby"
+    - "hub"
+  # Only send the player to a hold server the plugin believes is online.
+  only-online: true
+  # What to do when no hold server is usable.
+  #   DISCONNECT -> kick with 'no-server-message'
+  #   PASSTHROUGH -> let the original kick message through untouched
+  no-server-action: PASSTHROUGH
+  no-server-message: "<red>You were disconnected: <white><reason>\n\n<gray>No fallback server was available to hold you."
+  # Chat line sent when the player is moved to a hold server. Leaving this
+  # empty does NOT mean silence - Velocity then sends its own generic
+  # "You were kicked from <server>" line instead, so set something here.
+  redirect-message: "<gray>[<aqua>DDM</aqua>] <white>Lost connection to <yellow><server></yellow><white>: <gray><reason>"
+  # Chat line sent when the player simply stays on their current server
+  # (they were kicked mid-transfer). Set to "" for a silent takeover.
+  notify-message: "<gray>[<aqua>DDM</aqua>] <white>Could not reach <yellow><server></yellow><white>: <gray><reason>"
+
+# --------------------------------------------------------------------
+#  Health checking - how the plugin decides a server is up or down.
+#  This is what powers the "unreachable for XX" timer, and it is what
+#  stops the plugin from spam-connecting a server that is restarting.
+# --------------------------------------------------------------------
+watcher:
+  # SMART  -> only ping servers that someone is currently waiting for
+  #           (plus recently-failed ones). Cheap. Recommended.
+  # ALWAYS -> ping every registered server all the time. Useful if you
+  #           also want /ddm status to always be accurate.
+  mode: SMART
+  # Ping interval while the server is believed to be UP.
+  interval-up-ms: 5000
+  # Ping interval while the server is believed to be DOWN.
+  # This is how quickly we notice the server came back.
+  interval-down-ms: 2000
+  # Give up on a single ping after this long.
+  ping-timeout-ms: 2500
+  # Consecutive failed pings before a server is marked DOWN.
+  fail-threshold: 1
+  # Consecutive successful pings before a server is marked UP again.
+  # Raise to 2-3 if your server answers pings before it accepts logins.
+  success-threshold: 2
+  # When a player is kicked, immediately assume the server is down and
+  # start the timer from the moment of the kick instead of the first
+  # failed ping. Makes the "restarting for XX" timer accurate.
+  seed-down-on-kick: true
+  # Keep pinging a server for this long after the last player stopped
+  # waiting for it (SMART mode only).
+  linger-seconds: 60
+
+# --------------------------------------------------------------------
+#  Reconnect behaviour
+# --------------------------------------------------------------------
+reconnect:
+  enabled: true
+
+  # The instant retry. This is the "my connection blipped" fast path:
+  # one quick attempt before we show anybody a restart screen.
+  # It is skipped when the kick reason matched 'filters.restart-reasons'.
+  immediate:
+    enabled: true
+    delay-ms: 500
+    # How many instant attempts before falling back to the patient loop.
+    max-attempts: 1
+
+  retry:
+    # The patient loop: how often we try again once we are in
+    # "the server is away" mode. This is your "every 4 seconds".
+    interval-ms: 4000
+    # Hard floor. No configuration can make the plugin retry faster than
+    # this - it exists purely to stop accidental reconnect storms.
+    min-interval-ms: 1000
+
+    # Optional exponential backoff so a server that is down for ten
+    # minutes is not poked every four seconds for ten minutes.
+    backoff:
+      enabled: false
+      multiplier: 1.5
+      max-interval-ms: 30000
+
+    # Strongly recommended. When true the plugin only performs a real
+    # connection attempt if the health check says the server is up;
+    # otherwise it just keeps pinging (which is far cheaper and cannot
+    # interfere with a booting server).
+    only-when-online: true
+
+    # 0 = unlimited.
+    max-attempts: 0
+    # Stop trying after this long and apply 'on-give-up'. 0 = never give up.
+    max-duration-seconds: 900
+
+    #   DISCONNECT -> kick the player with 'give-up-message'
+    #   STAY       -> leave them on the hold server, just stop trying
+    on-give-up: STAY
+    give-up-message: "<red>Gave up reconnecting you to <yellow><server></yellow> after <white><elapsed></white>."
+
+  # If a player is kicked again moments after a successful reconnect
+  # (very common while a server is still booting) the plugin resumes the
+  # previous session instead of starting from zero, so the timer and the
+  # attempt counter stay honest. Seconds of memory after a session ends.
+  session-memory-seconds: 30
+
+  # Cancel an in-progress reconnect if the player runs /server themselves.
+  cancel-on-manual-connect: true
+
+  # Stop every sound this plugin started as soon as the player is back on
+  # their server (also applies when they give up / leave / cancel).
+  stop-music-on-success: true
+  # Any extra sound keys to stop at that moment.
+  extra-stop-keys: []
+
+# --------------------------------------------------------------------
+#  Re-entry queue - lets players trickle back in instead of 200 logins
+#  landing on a freshly booted server at the same millisecond.
+# --------------------------------------------------------------------
+queue:
+  enabled: true
+  # How many players are let through per release tick.
+  batch-size: 2
+  # How long between release ticks, in milliseconds.
+  # Defaults: 2 players every 0.5s.
+  interval-ms: 500
+  # Wait this long after the server is declared healthy before letting
+  # ANYONE in. Give it a moment to finish loading worlds and plugins.
+  start-delay-ms: 3000
+  # These players ignore the queue entirely.
+  bypass-permission: "dontdisconnectme.queue.bypass"
+  # Checked in order - the first permission a player has decides their
+  # priority. Everyone else queues behind them, first-kicked-first-served.
+  priority-permissions:
+    - "dontdisconnectme.queue.priority.high"
+    - "dontdisconnectme.queue.priority.medium"
+    - "dontdisconnectme.queue.priority.low"
+
+# --------------------------------------------------------------------
+#  What the player actually sees and hears.
+#
+#  Phases, in order:
+#    kicked       - the moment we take over, shows the kick reason
+#    waiting      - their server is unreachable / restarting
+#    reconnecting - their server is back, they are queued or being let in
+#    success      - they made it back
+#    failed       - we gave up
+#
+#  Every phase supports chat, action-bar, title, boss-bar and sounds,
+#  and every one of those can be switched off on its own.
+#
+#  Sound options:
+#    key           sound event id, e.g. minecraft:music_disc.otherside
+#    source        MASTER MUSIC RECORD WEATHER BLOCK HOSTILE NEUTRAL
+#                  PLAYER AMBIENT VOICE
+#    volume/pitch  standard Minecraft values
+#    delay-ms      wait this long after entering the phase before playing
+#    loop-seconds  replay every N seconds (0 = play once). Set this to the
+#                  length of the track for a seamless-ish loop.
+#    stop-on-exit  stop this sound when the phase ends (needed for discs)
+#    min-protocol  only play for clients >= this protocol (0 = any)
+#    max-protocol  only play for clients <= this protocol (0 = any)
+#  Handy protocol numbers: 1.18 = 757, 1.20.1 = 763, 1.21 = 767,
+#  1.21.4 = 769, 1.21.5 = 770, 1.21.8 = 772
+# --------------------------------------------------------------------
+phases:
+
+  # ---- The instant we intercept the kick -------------------------------
+  kicked:
+    enabled: true
+    update-interval-ms: 500
+    # How long this phase is shown before moving on to waiting/reconnecting.
+    duration-ms: 1500
+    chat:
+      enabled: false
+      repeat-seconds: 0
+      lines: []
+    action-bar:
+      enabled: true
+      text: "<red>⚠ Disconnected: <white><reason_plain><gray> - hold on..."
+    title:
+      enabled: false
+      title: ""
+      subtitle: ""
+      fade-in-ms: 0
+      stay-ms: 1000
+      fade-out-ms: 250
+    boss-bar:
+      enabled: false
+      text: "<red>Connection lost"
+      color: RED
+      overlay: PROGRESS
+      progress: 1.0
+      progress-mode: STATIC
+    sounds:
+      - key: "minecraft:entity.enderman.teleport"
+        source: MASTER
+        volume: 0.7
+        pitch: 0.8
+        delay-ms: 0
+        loop-seconds: 0
+        stop-on-exit: false
+        min-protocol: 0
+        max-protocol: 0
+
+  # ---- Their server is away ------------------------------------------
+  waiting:
+    enabled: true
+    update-interval-ms: 500
+    chat:
+      enabled: true
+      # 0 = send once when the phase starts. Otherwise resend every N seconds.
+      repeat-seconds: 30
+      lines:
+        - ""
+        - "<dark_gray>▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+        - "<yellow>⚠ <white><server> <gray>is currently restarting."
+        - "<gray>You will be reconnected automatically - <white>don't leave!"
+        - "<dark_gray>Unreachable for <gray><downtime><dark_gray> • next try in <gray><next_retry>s"
+        - "<dark_gray>▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+        - ""
+    action-bar:
+      enabled: true
+      text: "<gray>Reason: <white><reason_plain> <dark_gray>| <gray>Retrying in <yellow><next_retry>s<gray> • attempt <yellow><attempt>"
+    title:
+      enabled: true
+      title: "<gradient:#ff5555:#ffaa00>Server Restarting</gradient>"
+      subtitle: "<gray>Unreachable for <white><downtime_clock></white> • <green>reconnecting you"
+      fade-in-ms: 0
+      # Keep this comfortably above update-interval-ms so the title never
+      # flickers between refreshes.
+      stay-ms: 1500
+      fade-out-ms: 0
+    boss-bar:
+      enabled: true
+      text: "<red>✖ <white><server> <gray>is down • <white><downtime>"
+      color: RED
+      overlay: NOTCHED_10
+      progress: 1.0
+      # STATIC          -> always 'progress'
+      # RETRY_COUNTDOWN -> drains between retries
+      # QUEUE           -> fills as you move up the queue
+      progress-mode: RETRY_COUNTDOWN
+    sounds:
+      # Otherside. Requires 1.18+, so older clients simply hear nothing.
+      - key: "minecraft:music_disc.otherside"
+        source: RECORD
+        volume: 1.0
+        pitch: 1.0
+        delay-ms: 0
+        loop-seconds: 195
+        stop-on-exit: true
+        min-protocol: 757
+        max-protocol: 0
+      # A soft tick every retry is handled by 'retry-sound' below instead.
+
+    # Played once on every retry attempt while waiting. Same format as above.
+    retry-sound:
+      enabled: true
+      key: "minecraft:block.note_block.hat"
+      source: MASTER
+      volume: 0.4
+      pitch: 1.6
+
+  # ---- Server is back, easing the player in ----------------------------
+  reconnecting:
+    enabled: true
+    update-interval-ms: 500
+    chat:
+      enabled: true
+      repeat-seconds: 0
+      lines:
+        - ""
+        - "<green>✔ <white><server> <gray>is back online!"
+        - "<gray>Bringing you back <dark_gray>(<white><queue_position><dark_gray>/<white><queue_size><dark_gray> in queue, ~<white><queue_eta><dark_gray>)"
+        - ""
+    action-bar:
+      enabled: true
+      text: "<green>Reconnecting<gray>... <dark_gray>| <gray>queue <white><queue_position><gray>/<white><queue_size>"
+    title:
+      enabled: true
+      title: "<gradient:#55ff55:#00aa00>Reconnecting</gradient>"
+      subtitle: "<gray>Position <white><queue_position><gray> of <white><queue_size><gray> • <white><queue_eta>"
+      fade-in-ms: 0
+      stay-ms: 1500
+      fade-out-ms: 0
+    boss-bar:
+      enabled: true
+      text: "<green>Reconnecting to <white><server><green> • <white><queue_position><green>/<white><queue_size>"
+      color: GREEN
+      overlay: PROGRESS
+      progress: 0.0
+      progress-mode: QUEUE
+    sounds:
+      # Lava Chicken (Hyper Potions). Requires 1.21.5+.
+      - key: "minecraft:music_disc.lava_chicken"
+        source: RECORD
+        volume: 1.0
+        pitch: 1.0
+        delay-ms: 0
+        loop-seconds: 134
+        stop-on-exit: true
+        min-protocol: 770
+        max-protocol: 0
+      # Fallback jingle for clients older than 1.21.5.
+      - key: "minecraft:block.beacon.activate"
+        source: MASTER
+        volume: 0.6
+        pitch: 1.2
+        delay-ms: 0
+        loop-seconds: 0
+        stop-on-exit: true
+        min-protocol: 0
+        max-protocol: 769
+
+  # ---- Back home -------------------------------------------------------
+  success:
+    enabled: true
+    update-interval-ms: 0
+    # How long the success action bar / title stays up.
+    duration-ms: 3000
+    chat:
+      enabled: true
+      repeat-seconds: 0
+      lines:
+        - "<green>✔ <white>Welcome back to <yellow><server></yellow><white>! <dark_gray>(away for <gray><elapsed><dark_gray>)"
+    action-bar:
+      enabled: true
+      text: "<green>✔ Reconnected to <white><server>"
+    title:
+      enabled: false
+      title: "<green>Welcome back"
+      subtitle: "<gray>Away for <white><elapsed>"
+      fade-in-ms: 100
+      stay-ms: 1500
+      fade-out-ms: 500
+    boss-bar:
+      enabled: false
+      text: ""
+      color: GREEN
+      overlay: PROGRESS
+      progress: 1.0
+      progress-mode: STATIC
+    sounds:
+      - key: "minecraft:entity.player.levelup"
+        source: MASTER
+        volume: 0.6
+        pitch: 1.4
+        delay-ms: 0
+        loop-seconds: 0
+        stop-on-exit: false
+        min-protocol: 0
+        max-protocol: 0
+
+  # ---- We gave up ------------------------------------------------------
+  failed:
+    enabled: true
+    update-interval-ms: 0
+    duration-ms: 5000
+    chat:
+      enabled: true
+      repeat-seconds: 0
+      lines:
+        - "<red>✖ <white>Could not get you back to <yellow><server></yellow> <gray>after <white><elapsed><gray> and <white><attempt><gray> attempts."
+        - "<gray>You can try again yourself with <white>/server <server>"
+    action-bar:
+      enabled: true
+      text: "<red>✖ Reconnect failed"
+    title:
+      enabled: true
+      title: "<red>Reconnect failed"
+      subtitle: "<gray><server> <gray>is still unreachable"
+      fade-in-ms: 100
+      stay-ms: 3000
+      fade-out-ms: 500
+    boss-bar:
+      enabled: false
+      text: ""
+      color: RED
+      overlay: PROGRESS
+      progress: 1.0
+      progress-mode: STATIC
+    sounds:
+      - key: "minecraft:entity.villager.no"
+        source: MASTER
+        volume: 0.8
+        pitch: 1.0
+        delay-ms: 0
+        loop-seconds: 0
+        stop-on-exit: false
+        min-protocol: 0
+        max-protocol: 0
+
+# --------------------------------------------------------------------
+#  /ddm simulate <player> walks somebody through every screen without
+#  touching a single server - handy for tuning the messages above.
+# --------------------------------------------------------------------
+simulate:
+  kicked-seconds: 2
+  waiting-seconds: 12
+  reconnecting-seconds: 6
+
+# --------------------------------------------------------------------
+#  Plugin chat / command output
+# --------------------------------------------------------------------
+messages:
+  prefix: "<dark_gray>[<aqua>DDM</aqua><dark_gray>] <reset>"
+  no-permission: "<red>You don't have permission to do that."
+  # Shown as <reason> when the server died without sending one (a crash,
+  # a timeout, or a hard restart).
+  unknown-reason: "<gray>connection lost"
+  reload-success: "<green>Reloaded config in <white><ms>ms<green>."
+  reload-failure: "<red>Reload failed: <white><error>"
+  cancelled: "<yellow>Reconnect cancelled for <white><player><yellow>."
+  not-reconnecting: "<red><player> is not currently reconnecting."
+  player-not-found: "<red>No online player named <white><player><red>."
+  server-not-found: "<red>No server named <white><server><red>."
+  status-header: "<dark_gray>--- <aqua>DontDisconnectMe<dark_gray> ---"
+  status-server: "<gray> <white><server><gray>: <status> <dark_gray>(<gray>for <white><downtime><dark_gray>, <white><waiting><dark_gray> waiting)"
+  status-up: "<green>ONLINE"
+  status-down: "<red>OFFLINE"
+  status-unknown: "<gray>UNKNOWN"
+  status-none: "<gray> Nothing is being watched right now."
+  queue-header: "<dark_gray>--- <aqua>Queue for <white><server><dark_gray> ---"
+  queue-entry: "<gray> <white><queue_position><dark_gray>. <white><player> <dark_gray>(waiting <gray><elapsed><dark_gray>)"
+  queue-empty: "<gray> The queue is empty."
+  simulate-started: "<green>Started a simulated reconnect for <white><player><green> to <white><server><green>."
+
+# --------------------------------------------------------------------
+#  Per-server overrides.
+#
+#  Anything from the sections above can be repeated here under a server
+#  name and it will be deep-merged on top of the global settings for
+#  players coming from that server. Only list what you want to change.
+# --------------------------------------------------------------------
+servers:
+  # Example: the survival server takes ages to boot, so be more patient
+  # and let players in one at a time.
+  #
+  # survival:
+  #   queue:
+  #     batch-size: 1
+  #     interval-ms: 1500
+  #     start-delay-ms: 10000
+  #   reconnect:
+  #     retry:
+  #       interval-ms: 6000
+  #       max-duration-seconds: 1800
+  #   phases:
+  #     waiting:
+  #       title:
+  #         title: "<red>Survival is restarting"
+  #
+  # Example: never try to reconnect anyone to the creative server.
+  #
+  # creative:
+  #   reconnect:
+  #     enabled: false
+
+# --------------------------------------------------------------------
+#  Placeholders available in every message
+#  --------------------------------------------------------------------
+#   <player>            the player's username
+#   <uuid>              the player's UUID
+#   <server>            the server they are being returned to
+#   <hold_server>       the server currently holding them (may be empty)
+#   <reason>            the kick reason, formatting preserved
+#   <reason_plain>      the kick reason as plain text
+#   <phase>             kicked / waiting / reconnecting / success / failed
+#   <attempt>           connection attempts made so far
+#   <max_attempts>      configured attempt limit ("unlimited" if 0)
+#   <downtime>          how long the server has been unreachable (SHORT/LONG/CLOCK)
+#   <downtime_clock>    same, always as mm:ss
+#   <downtime_seconds>  same, as a raw number of seconds
+#   <elapsed>           how long this player has been waiting
+#   <elapsed_clock>     same, always as mm:ss
+#   <elapsed_seconds>   same, as a raw number of seconds
+#   <next_retry>        seconds until the next attempt
+#   <queue_position>    place in the re-entry queue (1 = next)
+#   <queue_size>        how many players are queued for that server
+#   <queue_eta>         estimated wait based on batch size and interval
+# --------------------------------------------------------------------
