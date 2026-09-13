@@ -9,6 +9,7 @@ import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -20,6 +21,7 @@ import top.cheesesmp.ddm.config.HoldSpec;
 import top.cheesesmp.ddm.config.PluginConfig;
 import top.cheesesmp.ddm.display.DisplayController;
 import top.cheesesmp.ddm.hold.FreezeHold;
+import top.cheesesmp.ddm.hold.SeamlessCoordinator;
 import top.cheesesmp.ddm.listener.KickListener;
 import top.cheesesmp.ddm.queue.ReleaseQueue;
 import top.cheesesmp.ddm.reconnect.ReconnectManager;
@@ -53,6 +55,7 @@ public final class DontDisconnectMe {
     private ReconnectManager manager;
     private DisplayController display;
     private FreezeHold freezeHold;
+    private SeamlessCoordinator seamless;
     private ScheduledTask tickTask;
     private long tickIntervalMs;
 
@@ -76,13 +79,20 @@ public final class DontDisconnectMe {
         watcher = new ServerWatcher(proxy, config.watcher());
         queue = new ReleaseQueue();
         freezeHold = new FreezeHold();
+        seamless = new SeamlessCoordinator();
+        MinecraftChannelIdentifier seamlessChannel =
+                MinecraftChannelIdentifier.from(SeamlessCoordinator.CHANNEL);
+        proxy.getChannelRegistrar().register(seamlessChannel);
+        logger.info("Registered channel '{}' for the backend companion plugin.",
+                seamlessChannel.getId());
         display = new DisplayController(freezeHold);
         display.debugSink(message -> {
             if (config.general().debug()) {
                 logger.info("[debug] {}", message);
             }
         });
-        manager = new ReconnectManager(proxy, logger, this::config, watcher, queue, display, freezeHold);
+        manager = new ReconnectManager(proxy, logger, this::config, watcher, queue, display,
+                freezeHold, seamless);
         applyConfigToComponents();
 
         proxy.getEventManager().register(this,

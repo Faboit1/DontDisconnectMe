@@ -26,6 +26,7 @@ import top.cheesesmp.ddm.config.HoldSpec;
 import top.cheesesmp.ddm.display.DisplayController;
 import top.cheesesmp.ddm.hold.FreezeHold;
 import top.cheesesmp.ddm.hold.HoldServers;
+import top.cheesesmp.ddm.hold.SeamlessCoordinator;
 import top.cheesesmp.ddm.queue.ReleaseQueue;
 import top.cheesesmp.ddm.util.Placeholders;
 import top.cheesesmp.ddm.util.Text;
@@ -45,6 +46,7 @@ public final class ReconnectManager {
     private final ReleaseQueue queue;
     private final DisplayController display;
     private final FreezeHold freezeHold;
+    private final SeamlessCoordinator seamless;
 
     private final Map<UUID, ReconnectSession> sessions = new ConcurrentHashMap<>();
     private final Map<UUID, Memory> memories = new ConcurrentHashMap<>();
@@ -60,7 +62,7 @@ public final class ReconnectManager {
 
     public ReconnectManager(ProxyServer proxy, Logger logger, Supplier<PluginConfig> config,
                             ServerWatcher watcher, ReleaseQueue queue, DisplayController display,
-                            FreezeHold freezeHold) {
+                            FreezeHold freezeHold, SeamlessCoordinator seamless) {
         this.proxy = proxy;
         this.logger = logger;
         this.config = config;
@@ -68,6 +70,31 @@ public final class ReconnectManager {
         this.queue = queue;
         this.display = display;
         this.freezeHold = freezeHold;
+        this.seamless = seamless;
+    }
+
+    public SeamlessCoordinator seamless() {
+        return seamless;
+    }
+
+    /**
+     * Recovers a player whose loading screen we skipped, only for the backend
+     * to report it could not hand their entity id back. Their client is now out
+     * of step with the server, so put them through an ordinary reconnect - one
+     * loading screen is much better than a session that half works.
+     */
+    public void resyncAfterFailedSkip(Player player, String serverName) {
+        UUID playerId = player.getUniqueId();
+        seamless.forget(playerId);
+        freezeHold.suppressWorldReset(playerId, false);
+        freezeHold.release(playerId);
+
+        proxy.getServer(serverName).ifPresent(server ->
+                player.createConnectionRequest(server).connect().whenComplete((result, error) -> {
+                    if (error != null || result == null || !result.isSuccessful()) {
+                        logger.warn("Could not resync {} onto {}", player.getUsername(), serverName);
+                    }
+                }));
     }
 
     /**
@@ -567,9 +594,29 @@ public final class ReconnectManager {
         // It stays quiet until the attempt resolves one way or the other.
         UUID playerId = session.playerId();
         freezeHold.quiet(playerId);
-        if (session.profile().hold().seamlessExperiment()) {
-            freezeHold.suppressWorldReset(playerId, true);
-            debug(() -> "[experiment] suppressing world reset for " + session.playerName());
+
+        // Skip the client's loading screen, but only where the backend plugin
+        // is there to hand the player's entity id back.
+        HoldSpec hold = session.profile().hold();
+        // How long the backend has been without them, not how long this whole
+        // ordeal has lasted - a player kicked repeatedly resumes their earlier
+        // session, so elapsedMs() keeps counting across all of it.
+        long awayMs = freezeHold.heldForMs(playerId, now);
+        boolean skipLoadingScreen = hold.seamlessEnabled()
+                && freezeHold.isHeld(playerId)
+                && seamless.canSkipLoadingScreen(session.targetServer(), true,
+                        awayMs, hold.seamlessMaxAwayMs());
+        debug(() -> "seamless check for " + session.playerName()
+                + ": enabled=" + hold.seamlessEnabled()
+                + " held=" + freezeHold.isHeld(playerId)
+                + " backendKnown=" + seamless.supports(session.targetServer())
+                + " away=" + awayMs + "ms"
+                + " limit=" + hold.seamlessMaxAwayMs() + "ms"
+                + " -> " + skipLoadingScreen);
+        freezeHold.suppressWorldReset(playerId, skipLoadingScreen);
+        if (skipLoadingScreen) {
+            seamless.expectVerdict(playerId, session.targetServer());
+            debug(() -> "bringing " + session.playerName() + " back without a loading screen");
         }
         player.createConnectionRequest(target.get()).connect().whenComplete((result, error) -> {
             session.connecting(false);

@@ -13,7 +13,8 @@ public record HoldSpec(
         Mode mode,
         long keepAliveIntervalMs,
         String consoleReason,
-        boolean seamlessExperiment,
+        boolean seamlessEnabled,
+        long seamlessMaxAwayMs,
         List<String> servers,
         boolean onlyOnline,
         NoServerAction noServerAction,
@@ -41,11 +42,13 @@ public record HoldSpec(
 
     public static HoldSpec from(ConfigSection section) {
         ConfigSection freeze = section.section("freeze");
+        ConfigSection seamless = section.section("seamless");
         return new HoldSpec(
                 section.getEnum(Mode.class, "mode", Mode.FREEZE),
                 freeze.getLongClamped("keep-alive-interval-ms", 10_000L, 1_000L, 25_000L),
                 freeze.getString("console-reason", "held by DontDisconnectMe"),
-                freeze.getBoolean("seamless-experiment", false),
+                seamless.getBoolean("enabled", true),
+                Math.max(0L, seamless.getLong("max-away-seconds", 60L)) * 1000L,
                 List.copyOf(section.getStringList("servers")),
                 section.getBoolean("only-online", true),
                 section.getEnum(NoServerAction.class, "no-server-action", NoServerAction.PASSTHROUGH),

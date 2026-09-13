@@ -1,0 +1,7 @@
+name: DontDisconnectMe-Backend
+version: '${version}'
+main: top.cheesesmp.ddm.backend.DontDisconnectMeBackend
+api-version: '1.21'
+folia-supported: true
+author: Faboit1
+description: Hands a reconnecting player their previous entity id back, so the proxy can bring them home without a loading screen.

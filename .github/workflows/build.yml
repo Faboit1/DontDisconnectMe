@@ -40,11 +40,19 @@ jobs:
           path: build/test-results/test/
           if-no-files-found: ignore
 
-      - name: Upload plugin jar
+      - name: Upload proxy plugin jar
         uses: actions/upload-artifact@v4
         with:
           name: DontDisconnectMe
           path: build/libs/DontDisconnectMe-*.jar
+          if-no-files-found: error
+
+      # The Paper/Folia companion that lets a reconnect skip the loading screen.
+      - name: Upload backend plugin jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: DontDisconnectMe-Backend
+          path: backend/build/libs/DontDisconnectMe-Backend-*.jar
           if-no-files-found: error
 
       # Tagging a commit v1.2.3 publishes that build as a GitHub release.
@@ -52,5 +60,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/libs/DontDisconnectMe-*.jar
+          files: |
+            build/libs/DontDisconnectMe-*.jar
+            backend/build/libs/DontDisconnectMe-Backend-*.jar
           generate_release_notes: true

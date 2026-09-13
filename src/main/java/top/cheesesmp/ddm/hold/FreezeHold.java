@@ -80,15 +80,19 @@ public final class FreezeHold {
         private final Object connection;
         /** The player's entity id on the dead server, needed to emit sounds. */
         private final Integer entityId;
+        /** When we took the connection over - the moment the backend lost them. */
+        private final long heldAt;
         private volatile long nextKeepAliveAt;
         /** Set while a reconnect is in flight, when the client is mid-handover. */
         private volatile boolean quiet;
 
-        private Held(Channel channel, HoldGuard guard, Object connection, Integer entityId) {
+        private Held(Channel channel, HoldGuard guard, Object connection, Integer entityId,
+                     long heldAt) {
             this.channel = channel;
             this.guard = guard;
             this.connection = connection;
             this.entityId = entityId;
+            this.heldAt = heldAt;
         }
     }
 
@@ -172,6 +176,20 @@ public final class FreezeHold {
 
     public boolean isHeld(UUID playerId) {
         return held.containsKey(playerId);
+    }
+
+    /**
+     * How long this player has been held - which is how long their server has
+     * been without them, and so the window the backend's entity id has to
+     * survive. Not the same as how long the reconnect has been going on: a
+     * player kicked repeatedly resumes their earlier session, and that clock
+     * keeps running across all of it.
+     *
+     * @return the hold's age, or {@link Long#MAX_VALUE} if they are not held
+     */
+    public long heldForMs(UUID playerId, long now) {
+        Held entry = held.get(playerId);
+        return entry == null ? Long.MAX_VALUE : Math.max(0L, now - entry.heldAt);
     }
 
     /**
@@ -293,7 +311,8 @@ public final class FreezeHold {
             // Outbound events start at the tail, so the tail-most handler is the
             // first to see the disconnect packet and the close that follows it.
             channel.pipeline().addLast(GUARD_NAME, guard);
-            held.put(player.getUniqueId(), new Held(channel, guard, connection, entityId));
+            held.put(player.getUniqueId(),
+                    new Held(channel, guard, connection, entityId, System.currentTimeMillis()));
             return true;
         } catch (Throwable ex) {
             return false;

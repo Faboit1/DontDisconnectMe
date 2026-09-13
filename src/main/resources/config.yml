@@ -120,13 +120,35 @@ hold:
     # player never sees this (the packet is dropped) - it is only there to
     # stop your console looking like everyone quit.
     console-reason: "held by DontDisconnectMe"
-    # EXPERIMENTAL, leave this off.
-    # Drops the join-game and respawn packets Velocity sends when handing a
-    # player to a backend - the packets that make the client throw its world
-    # away and show the loading screen. The switch then looks like an ordinary
-    # teleport instead. It is off because the client is left holding an entity
-    # id the new server knows nothing about, which has to be solved first.
-    seamless-experiment: false
+
+  # ------------------------------------------------------------------
+  #  Bringing them back without a loading screen.
+  #
+  #  The "Loading terrain" flash on a reconnect comes from one packet: the
+  #  join-game the proxy sends when handing a player to a backend. It is
+  #  what tells the client its entity id has changed, and it is also what
+  #  makes the client throw its world away.
+  #
+  #  Skip that packet and the player never leaves their world - the new
+  #  chunks simply stream in underneath. But it is only safe if the entity
+  #  id really has not changed, or the client ends up talking about an
+  #  entity the server has never heard of.
+  #
+  #  That is what the companion plugin is for. Install
+  #  DontDisconnectMe-Backend on your servers and it hands a reconnecting
+  #  player their previous entity id straight back, which makes the
+  #  join-game unnecessary.
+  #
+  #  Without the backend plugin this does nothing and players reconnect
+  #  the ordinary way - it is switched on safely, not switched on blindly.
+  # ------------------------------------------------------------------
+  seamless:
+    enabled: true
+    # Never skip the loading screen for someone who has been away longer
+    # than this: their entity id will have been given up by then. The
+    # backend plugin reports its own limit and the smaller of the two wins,
+    # so this can only ever be more cautious.
+    max-away-seconds: 60
 
   # Used when mode is SERVER, and as the fallback when FREEZE is not
   # available. Tried in order; the server the player was kicked from is
