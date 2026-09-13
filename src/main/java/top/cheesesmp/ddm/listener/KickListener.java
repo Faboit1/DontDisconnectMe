@@ -85,10 +85,17 @@ public final class KickListener {
         }
         watcher.markInterest(serverName, now);
 
+        // Holding a player in place only works if there is something in place to
+        // hold: a client that has never been in a world has nothing on screen to
+        // keep, and freezing it would leave them staring at a loading screen. So
+        // a player who is only just joining goes to a hold server instead.
+        boolean hasWorldLoaded = player.getCurrentServer().isPresent()
+                || freezeHold.isHeld(player.getUniqueId());
+
         // Preferred path: keep them right where they are, on the proxy, with
         // their client none the wiser. Taking the connection over has to happen
         // now, before Velocity acts on this event's result.
-        if (profile.hold().mode() == HoldSpec.Mode.FREEZE && freezeHold.hold(player)) {
+        if (profile.hold().mode() == HoldSpec.Mode.FREEZE && hasWorldLoaded && freezeHold.hold(player)) {
             // They are on the proxy itself, so there is no hold server to name.
             manager.start(player, serverName, reason, restartMode, false).holdServer("");
             // Whatever result we set, the disconnect it produces is dropped by
@@ -130,10 +137,17 @@ public final class KickListener {
             return;
         }
 
-        // Nowhere to put them. Velocity cannot hold a player with no backend.
-        logger.warn("No hold server available for {} after being kicked from {} - "
-                        + "configure 'hold.servers' with a limbo or lobby server to keep players online.",
-                player.getUsername(), serverName);
+        // Nowhere to put them.
+        if (!hasWorldLoaded) {
+            logger.warn("{} tried to join {} while it is down, and no hold server is available. "
+                            + "Players can only be held in place once they have a world loaded, so add a "
+                            + "limbo or lobby server to 'hold.servers' to catch players joining during an "
+                            + "outage.",
+                    player.getUsername(), serverName);
+        } else {
+            logger.warn("No hold server available for {} after being kicked from {}.",
+                    player.getUsername(), serverName);
+        }
         if (profile.hold().noServerAction() == HoldSpec.NoServerAction.DISCONNECT) {
             String message = profile.hold().noServerMessage();
             if (!Text.isBlank(message)) {

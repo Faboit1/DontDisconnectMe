@@ -1,8 +1,12 @@
 package top.cheesesmp.ddm.config;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import net.kyori.adventure.bossbar.BossBar;
+import net.kyori.adventure.sound.Sound;
+import net.kyori.adventure.sound.SoundStop;
 
 /**
  * Everything a single phase (kicked / waiting / reconnecting / success /
@@ -18,6 +22,7 @@ public record PhaseSpec(
         TitleSpec title,
         BossBarSpec bossBar,
         List<SoundSpec> sounds,
+        List<SoundStop> stopSoundsFirst,
         RetrySoundSpec retrySound) {
 
     /** How a boss bar's progress should behave while the phase is on screen. */
@@ -106,7 +111,33 @@ public record PhaseSpec(
                 TitleSpec.from(section.section("title")),
                 BossBarSpec.from(section.section("boss-bar")),
                 SoundSpec.listFrom(section, "sounds"),
+                stopsFrom(section),
                 RetrySoundSpec.from(section.section("retry-sound")));
+    }
+
+    /**
+     * What to silence the moment this phase starts, so its music is never
+     * layered on top of whatever the player already had playing - the game's
+     * own background music, or the disc from the previous phase.
+     *
+     * <p>Entries are sound sources ({@code MUSIC}, {@code RECORD}, ...) or
+     * {@code ALL} for everything.
+     */
+    private static List<SoundStop> stopsFrom(ConfigSection section) {
+        List<SoundStop> out = new ArrayList<>();
+        for (String raw : section.getStringList("stop-sounds-first")) {
+            String value = raw.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+            if (value.equals("ALL")) {
+                out.add(SoundStop.all());
+                continue;
+            }
+            try {
+                out.add(SoundStop.source(Sound.Source.valueOf(value)));
+            } catch (IllegalArgumentException ignored) {
+                // An unknown source should not cost the player their music.
+            }
+        }
+        return List.copyOf(out);
     }
 
     public boolean updates() {

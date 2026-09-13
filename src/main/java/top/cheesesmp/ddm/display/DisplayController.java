@@ -49,6 +49,9 @@ public final class DisplayController {
             return;
         }
 
+        if (session.consumePhaseEntered()) {
+            enterPhaseAudio(player, session, spec);
+        }
         sendChatIfDue(player, session, spec, resolver, now);
         playSoundsIfDue(player, session, spec, now);
 
@@ -70,6 +73,21 @@ public final class DisplayController {
         }
 
         renderBossBar(player, session, spec, resolver, now);
+    }
+
+    /**
+     * Clears the deck before a phase's own sounds start: first anything this
+     * plugin left playing (the previous phase's disc), then whatever the phase
+     * asks to silence - normally the game's background music and any other
+     * record - so only one track is ever playing.
+     */
+    private void enterPhaseAudio(Player player, ReconnectSession session, PhaseSpec spec) {
+        for (Key key : session.drainStoppableSounds()) {
+            stop(player, SoundStop.named(key));
+        }
+        for (SoundStop stop : spec.stopSoundsFirst()) {
+            stop(player, stop);
+        }
     }
 
     private void sendChatIfDue(Player player, ReconnectSession session, PhaseSpec spec,
