@@ -46,6 +46,23 @@ public final class SeamlessCoordinator {
      * @param awayMs     how long they have been held
      * @return true if the join-game packet can safely be skipped
      */
+    /**
+     * The protocol version that introduced the configuration phase (1.20.2).
+     *
+     * <p>From here on, every server switch parks the client in configuration
+     * first - that is the "Reconfiguring" screen - and a client leaving
+     * configuration has thrown its world away and rebuilds it from the
+     * join-game that follows. Skipping that packet cannot save the loading
+     * screen for such a client, and leaves it with no world at all, so it
+     * crashes on the first chunk the server sends.
+     */
+    private static final int FIRST_CONFIG_PHASE_PROTOCOL = 764;
+
+    /** Whether this client rebuilds its world on every server switch regardless. */
+    public static boolean rebuildsWorldOnSwitch(int protocolVersion) {
+        return protocolVersion >= FIRST_CONFIG_PHASE_PROTOCOL;
+    }
+
     public boolean canSkipLoadingScreen(String serverName, boolean sameServer, long awayMs,
                                         long maxAwayMs) {
         if (!sameServer) {

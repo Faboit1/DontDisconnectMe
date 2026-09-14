@@ -290,6 +290,16 @@ Durations render as `1m 23s`, `01:23` or `1 minute, 23 seconds` depending on
 
 ## Coming back without a loading screen
 
+> **Only for clients older than 1.20.2.** From 1.20.2 the proxy parks the client
+> in the *configuration* phase on every server switch — that is the
+> "Reconfiguring" screen — and a client leaving configuration has already thrown
+> its world away and rebuilds it from the join-game that follows. There is no
+> loading screen left to save there, and skipping the packet would leave the
+> client with no world at all, so the plugin refuses. Removing the screen on a
+> modern client means stopping the configuration switch itself, which Velocity
+> does unconditionally in `ClientPlaySessionHandler#doSwitch`, and that needs a
+> forked proxy rather than a plugin.
+
 By default a reconnect still costs the player a brief "Loading terrain" flash.
 That flash is one packet: the **join-game** the proxy has to send when handing a
 player to a backend. It exists to tell the client its entity id has changed —
@@ -310,6 +320,8 @@ plugins/DontDisconnectMe-x.y.z.jar             on the proxy
 No configuration is needed on either side. The backend announces itself to the
 proxy, and the proxy only skips the loading screen when **all** of these hold:
 
+* the client is **older than 1.20.2**, so it stays in the play state across the
+  switch and keeps its world (see the note above);
 * the player is being returned to the **same server** they dropped from — a
   different server means a different world, and the client must reload;
 * that server is running the backend plugin and has announced it;
@@ -378,7 +390,9 @@ so a broad one like `.*ban.*` will also swallow "banner".
 Lava Chicken 1.21.5+) and are gated by `min-protocol`. Turn on `general.debug`
 and the console logs every sound it plays, for whom, and on which server.
 
-**Still seeing a loading screen on reconnect** — install
+**Still seeing a loading screen on reconnect** — on 1.20.2+ clients this is
+expected and cannot be fixed from a plugin; see the note at the top of *Coming
+back without a loading screen*. On older clients, install
 `DontDisconnectMe-Backend` (below). With `general.debug` on, the proxy logs a
 line per reconnect saying exactly which condition refused, e.g.
 `seamless check for Bob: enabled=true held=true backendKnown=false ... -> false`

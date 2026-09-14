@@ -66,6 +66,7 @@ public final class FreezeHold {
     private final Class<?> disconnectPacketType;
     private final Class<?> joinGamePacketType;
     private final Class<?> respawnPacketType;
+    private final Class<?> startUpdatePacketType;
     private final Constructor<?> keepAliveCtor;
     private final Method setRandomId;
     private final Constructor<?> soundCtor;
@@ -108,6 +109,7 @@ public final class FreezeHold {
         Class<?> disconnectType = null;
         Class<?> joinGameType = null;
         Class<?> respawnType = null;
+        Class<?> startUpdateType = null;
         Constructor<?> keepAlive = null;
         Method randomId = null;
         Constructor<?> sound = null;
@@ -132,6 +134,13 @@ public final class FreezeHold {
             disconnectType = Class.forName(PACKET + "DisconnectPacket");
             joinGameType = Class.forName(PACKET + "JoinGamePacket");
             respawnType = Class.forName(PACKET + "RespawnPacket");
+            try {
+                startUpdateType = Class.forName(PACKET + "config.StartUpdatePacket");
+            } catch (ClassNotFoundException noConfigPhase) {
+                // A proxy old enough to predate the configuration phase; there
+                // is then no config switch to watch out for.
+                startUpdateType = null;
+            }
 
             Class<?> keepAliveType = Class.forName(PACKET + "KeepAlivePacket");
             keepAlive = keepAliveType.getConstructor();
@@ -158,6 +167,7 @@ public final class FreezeHold {
         this.disconnectPacketType = disconnectType;
         this.joinGamePacketType = joinGameType;
         this.respawnPacketType = respawnType;
+        this.startUpdatePacketType = startUpdateType;
         this.keepAliveCtor = keepAlive;
         this.setRandomId = randomId;
         this.soundCtor = sound;
@@ -246,6 +256,13 @@ public final class FreezeHold {
         if (!supported) {
             return true;
         }
+        Held entry = held.get(player.getUniqueId());
+        if (entry != null && entry.quiet) {
+            // Mid-handover: Velocity's own API does not check the state either,
+            // so this is the only thing standing between the client and a packet
+            // it cannot decode.
+            return false;
+        }
         try {
             Object connection = getConnection.invoke(player);
             if (connection == null) {
@@ -307,7 +324,8 @@ public final class FreezeHold {
                 entityId = (Integer) getEntityId.invoke(backend);
             }
 
-            HoldGuard guard = new HoldGuard(disconnectPacketType, joinGamePacketType, respawnPacketType);
+            HoldGuard guard = new HoldGuard(disconnectPacketType, joinGamePacketType,
+                    respawnPacketType, startUpdatePacketType);
             // Outbound events start at the tail, so the tail-most handler is the
             // first to see the disconnect packet and the close that follows it.
             channel.pipeline().addLast(GUARD_NAME, guard);
@@ -419,14 +437,16 @@ public final class FreezeHold {
         private final Class<?> disconnectPacketType;
         private final Class<?> joinGamePacketType;
         private final Class<?> respawnPacketType;
+        private final Class<?> startUpdatePacketType;
         private volatile boolean armed = true;
         private volatile boolean suppressWorldReset;
 
         private HoldGuard(Class<?> disconnectPacketType, Class<?> joinGamePacketType,
-                          Class<?> respawnPacketType) {
+                          Class<?> respawnPacketType, Class<?> startUpdatePacketType) {
             this.disconnectPacketType = disconnectPacketType;
             this.joinGamePacketType = joinGamePacketType;
             this.respawnPacketType = respawnPacketType;
+            this.startUpdatePacketType = startUpdatePacketType;
         }
 
         private void disarm() {
@@ -439,6 +459,15 @@ public final class FreezeHold {
                 io.netty.util.ReferenceCountUtil.release(msg);
                 promise.setSuccess();
                 return;
+            }
+            // The proxy is putting the client into the configuration phase.
+            // A client that goes through configuration throws its world away on
+            // the way in and has no level again until the join-game that follows,
+            // so swallowing that packet would leave it crashing on the first
+            // chunk it is sent. Give up on skipping the loading screen rather
+            // than break the client - whatever anyone asked for.
+            if (startUpdatePacketType != null && startUpdatePacketType.isInstance(msg)) {
+                suppressWorldReset = false;
             }
             if (suppressWorldReset
                     && (joinGamePacketType.isInstance(msg) || respawnPacketType.isInstance(msg))) {

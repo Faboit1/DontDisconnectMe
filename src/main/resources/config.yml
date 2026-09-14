@@ -141,6 +141,15 @@ hold:
   #
   #  Without the backend plugin this does nothing and players reconnect
   #  the ordinary way - it is switched on safely, not switched on blindly.
+  #
+  #  IMPORTANT - this only applies to clients older than 1.20.2.
+  #  From 1.20.2 the proxy parks the client in the configuration phase on
+  #  every server switch (the "Reconfiguring" screen), and a client coming
+  #  out of configuration has already dropped its world and rebuilds it
+  #  from the join-game that follows. Skipping the packet there saves no
+  #  loading screen and leaves the client with no world at all, so it is
+  #  refused - on the client's version, and again on the wire the moment
+  #  the proxy starts a configuration switch.
   # ------------------------------------------------------------------
   seamless:
     enabled: true

@@ -76,4 +76,14 @@ class SeamlessCoordinatorTest {
         assertFalse(new SeamlessCoordinator()
                 .canSkipLoadingScreen("survival", true, 0L, hold.seamlessMaxAwayMs()));
     }
+
+    @Test
+    void refusesToSkipForClientsThatGoThroughConfiguration() {
+        // 1.20.2 and later park the client in configuration on every switch,
+        // which throws the world away before the join-game we would be dropping.
+        assertTrue(SeamlessCoordinator.rebuildsWorldOnSwitch(764));   // 1.20.2
+        assertTrue(SeamlessCoordinator.rebuildsWorldOnSwitch(772));   // 1.21.8
+        assertFalse(SeamlessCoordinator.rebuildsWorldOnSwitch(763));  // 1.20.1
+        assertFalse(SeamlessCoordinator.rebuildsWorldOnSwitch(757));  // 1.18
+    }
 }
