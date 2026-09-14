@@ -602,12 +602,16 @@ public final class ReconnectManager {
         // ordeal has lasted - a player kicked repeatedly resumes their earlier
         // session, so elapsedMs() keeps counting across all of it.
         long awayMs = freezeHold.heldForMs(playerId, now);
+        boolean rebuilds = SeamlessCoordinator.rebuildsWorldOnSwitch(
+                player.getProtocolVersion().getProtocol());
         boolean skipLoadingScreen = hold.seamlessEnabled()
+                && !rebuilds
                 && freezeHold.isHeld(playerId)
                 && seamless.canSkipLoadingScreen(session.targetServer(), true,
                         awayMs, hold.seamlessMaxAwayMs());
         debug(() -> "seamless check for " + session.playerName()
                 + ": enabled=" + hold.seamlessEnabled()
+                + " clientRebuildsAnyway=" + rebuilds
                 + " held=" + freezeHold.isHeld(playerId)
                 + " backendKnown=" + seamless.supports(session.targetServer())
                 + " away=" + awayMs + "ms"
