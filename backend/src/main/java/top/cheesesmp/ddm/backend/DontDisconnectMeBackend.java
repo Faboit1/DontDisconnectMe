@@ -120,6 +120,18 @@ public final class DontDisconnectMeBackend extends JavaPlugin implements Listene
         }
 
         int assigned = player.getEntityId();
+        if (previous.entityId() >= assigned) {
+            // Entity ids come from a counter that only ever climbs within a run,
+            // so a remembered id is free exactly when it is below the one just
+            // handed out. An id at or above it means the counter has been reset
+            // under us - a restart, or another plugin - and handing it back
+            // could collide with a live entity.
+            if (debug) {
+                getLogger().info("[debug] " + player.getName() + ": not handing entity "
+                        + previous.entityId() + " back; the counter is at " + assigned);
+            }
+            return;
+        }
         boolean restored = restorer.restore(player, previous.entityId());
         restoredAtLogin.put(player.getUniqueId(), restored);
         if (debug) {

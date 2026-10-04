@@ -11,7 +11,9 @@ import java.util.List;
  */
 public record HoldSpec(
         Mode mode,
+        int maxHeld,
         long keepAliveIntervalMs,
+        long disconnectVetoMs,
         String consoleReason,
         boolean seamlessEnabled,
         long seamlessMaxAwayMs,
@@ -45,7 +47,9 @@ public record HoldSpec(
         ConfigSection seamless = section.section("seamless");
         return new HoldSpec(
                 section.getEnum(Mode.class, "mode", Mode.FREEZE),
+                (int) section.getLongClamped("max-held", 0L, 0L, 100_000L),
                 freeze.getLongClamped("keep-alive-interval-ms", 10_000L, 1_000L, 25_000L),
+                freeze.getLongClamped("disconnect-veto-ms", 1000L, 0L, 10_000L),
                 freeze.getString("console-reason", "held by DontDisconnectMe"),
                 seamless.getBoolean("enabled", true),
                 Math.max(0L, seamless.getLong("max-away-seconds", 60L)) * 1000L,

@@ -111,7 +111,21 @@ hold:
   # update can never strand your players.
   mode: FREEZE
 
+  # Never hold more than this many players at once. Each held player is a
+  # connection nothing else is driving, so a whole-network outage would
+  # otherwise turn every online player into one. Past the cap, kicks happen
+  # for real. 0 = no limit.
+  max-held: 0
+
   freeze:
+    # How long after a kick a disconnect aimed at this player is swallowed.
+    # Only one ever needs swallowing - the one Velocity sends because the kick
+    # was intercepted. Swallowing them all would make a held player unkickable:
+    # a proxy-side ban is a disconnect packet and a channel close, which is
+    # exactly what the hold refuses. Past this window, a disconnect is taken
+    # to mean somebody meant it. Raise it only if a kick still slips through.
+    disconnect-veto-ms: 1000
+
     # How often a held client is sent a keep-alive. Nothing else is talking
     # to it and vanilla drops a connection that has been silent for 30s, so
     # this needs to stay comfortably under that.
@@ -224,7 +238,12 @@ reconnect:
   # It is skipped when the kick reason matched 'filters.restart-reasons'.
   immediate:
     enabled: true
-    delay-ms: 500
+    # Keep this above the slowest player-data save on your backends. A kick
+    # runs the backend's full quit path, including that save; reconnecting
+    # before it has committed loads a stale inventory, and the next quit
+    # writes the stale copy back - which is a dupe. 500ms is NOT enough with
+    # MySQL-backed inventory sync (PlayerDataSync and friends); 1500-3000 is.
+    delay-ms: 1500
     # How many instant attempts before falling back to the patient loop.
     max-attempts: 1
 
@@ -253,6 +272,12 @@ reconnect:
     max-attempts: 0
     # Stop trying after this long and apply 'on-give-up'. 0 = never give up.
     max-duration-seconds: 900
+    # Stop after the target server has been up and still turned this player
+    # away this many times - a ban, a whitelist, a full server. Without it a
+    # punishment whose wording is not in ignored-reasons below would be
+    # retried forever, and the player would never see why they were kicked.
+    # 0 disables it.
+    refusal-give-up: 3
 
     #   DISCONNECT -> kick the player with 'give-up-message'
     #   STAY       -> leave them on the hold server, just stop trying

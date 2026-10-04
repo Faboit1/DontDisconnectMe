@@ -492,6 +492,24 @@ public final class ReconnectManager {
         }
     }
 
+    /**
+     * Ends a session the target server has refused outright, showing the
+     * player the reason it gave rather than leaving them held and guessing.
+     */
+    private void giveUpOnRefusal(ReconnectSession session, long now) {
+        Player player = proxy.getPlayer(session.playerId()).orElse(null);
+        Component reason = session.refusalReason();
+        endSession(session, player, true);
+        if (player == null) {
+            freezeHold.release(session.playerId());
+            return;
+        }
+        player.clearTitle();
+        player.sendActionBar(Component.empty());
+        standDown(session, player, reason != null,
+                reason == null ? Component.empty() : reason);
+    }
+
     private void finishTerminal(ReconnectSession session, Player player) {
         boolean failed = session.phase() == Phase.FAILED;
         ReconnectSpec spec = session.profile().reconnect();
@@ -528,9 +546,12 @@ public final class ReconnectManager {
         Optional<RegisteredServer> fallback = HoldServers.pick(proxy, watcher,
                 session.profile().hold(), session.targetServer(), System.currentTimeMillis());
         if (fallback.isEmpty()) {
-            // Nowhere to go. Keep holding them - they stay online and can pick a
-            // server themselves - rather than dropping them into a timeout.
-            debug(() -> "keeping " + session.playerName() + " held; no hold server to stand down to");
+            // Nowhere to go, so they stay online and can pick a server
+            // themselves - but the hold is given back. Keeping it would leave a
+            // connection the proxy can no longer close, for a session that has
+            // stopped trying to do anything with it.
+            debug(() -> "no hold server to stand down to; releasing " + session.playerName());
+            freezeHold.release(playerId);
             return;
         }
         player.createConnectionRequest(fallback.get()).connect().whenComplete((result, error) -> {
@@ -641,6 +662,16 @@ public final class ReconnectManager {
             }
             // They are staying with us after all, so start talking to them again.
             freezeHold.resume(playerId);
+            // A server that is up and still turning this player away is refusing
+            // them - a ban, a whitelist, a full server - not an outage to ride
+            // out. Decided on the watcher's reading rather than on the wording
+            // of the message, which varies by punishment plugin and language.
+            if (status == ConnectionRequestBuilder.Status.SERVER_DISCONNECTED
+                    && watcher.isOnline(session.targetServer())) {
+                session.refused(result.getReasonComponent().orElse(null));
+            } else {
+                session.notRefused();
+            }
             if (status == ConnectionRequestBuilder.Status.CONNECTION_IN_PROGRESS) {
                 // Not a real failure - do not hold it against the player.
                 session.scheduleAttempt(finishedAt, Math.min(500L, retry.minIntervalMs()));
@@ -656,6 +687,15 @@ public final class ReconnectManager {
             watcher.seedOffline(session.targetServer(), now);
         }
         ReconnectSpec spec = session.profile().reconnect();
+
+        if (spec.retry().refusalsExhausted(session.refusals())) {
+            // Retrying cannot help, and holding them would hide the reason they
+            // were turned away - which is the whole point of a punishment.
+            logger.info("{} was refused by {} {} times; standing down.",
+                    session.playerName(), session.targetServer(), session.refusals());
+            giveUpOnRefusal(session, now);
+            return;
+        }
 
         if (session.phase() == Phase.KICKED) {
             if (session.immediateAttempts() >= spec.immediate().maxAttempts()) {

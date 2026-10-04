@@ -304,9 +304,21 @@ public final class FreezeHold {
      * @return false if unsupported or the connection could not be taken over,
      *         in which case the caller should fall back to a hold server
      */
-    public boolean hold(Player player) {
-        if (!supported || held.containsKey(player.getUniqueId())) {
-            return held.containsKey(player.getUniqueId());
+    public boolean hold(Player player, long vetoMs, int maxHeld) {
+        Held existing = held.get(player.getUniqueId());
+        if (existing != null) {
+            // A second kick for somebody already held: Velocity is about to send
+            // another disconnect, so open the window again for that one.
+            existing.guard.vetoUntil = System.currentTimeMillis() + vetoMs;
+            return true;
+        }
+        if (!supported) {
+            return false;
+        }
+        if (maxHeld > 0 && held.size() >= maxHeld) {
+            // Holding is not free - each held player is a connection nothing
+            // else is driving. Past the cap, let the kick happen for real.
+            return false;
         }
         try {
             Object connection = getConnection.invoke(player);
@@ -328,6 +340,7 @@ public final class FreezeHold {
                     respawnPacketType, startUpdatePacketType);
             // Outbound events start at the tail, so the tail-most handler is the
             // first to see the disconnect packet and the close that follows it.
+            guard.vetoUntil = System.currentTimeMillis() + vetoMs;
             channel.pipeline().addLast(GUARD_NAME, guard);
             held.put(player.getUniqueId(),
                     new Held(channel, guard, connection, entityId, System.currentTimeMillis()));
@@ -440,6 +453,17 @@ public final class FreezeHold {
         private final Class<?> startUpdatePacketType;
         private volatile boolean armed = true;
         private volatile boolean suppressWorldReset;
+        /**
+         * Until when a disconnect aimed at this player is swallowed.
+         *
+         * <p>Only one disconnect ever needs swallowing: the one Velocity sends
+         * as a consequence of the kick being intercepted. Swallowing every
+         * disconnect for the whole hold would make a held player unkickable -
+         * a proxy-side ban is a disconnect packet and a channel close, exactly
+         * what the hold is built to refuse - so the veto is given a deadline
+         * and anything after it is somebody meaning it.
+         */
+        private volatile long vetoUntil;
 
         private HoldGuard(Class<?> disconnectPacketType, Class<?> joinGamePacketType,
                           Class<?> respawnPacketType, Class<?> startUpdatePacketType) {
@@ -451,11 +475,16 @@ public final class FreezeHold {
 
         private void disarm() {
             armed = false;
+            vetoUntil = 0L;
+        }
+
+        private boolean vetoing() {
+            return armed && System.currentTimeMillis() < vetoUntil;
         }
 
         @Override
         public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-            if (armed && disconnectPacketType.isInstance(msg)) {
+            if (vetoing() && disconnectPacketType.isInstance(msg)) {
                 io.netty.util.ReferenceCountUtil.release(msg);
                 promise.setSuccess();
                 return;
@@ -480,7 +509,7 @@ public final class FreezeHold {
 
         @Override
         public void close(ChannelHandlerContext ctx, ChannelPromise promise) throws Exception {
-            if (armed) {
+            if (vetoing()) {
                 promise.setSuccess();
                 return;
             }
