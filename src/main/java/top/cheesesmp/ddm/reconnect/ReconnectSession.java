@@ -35,6 +35,10 @@ public final class ReconnectSession {
     private volatile long phaseStartedAt;
     private volatile int attempts;
     private volatile int immediateAttempts;
+    /** Times the target server answered and turned this player away. */
+    private volatile int refusals;
+    /** Why it turned them away, so they can be told instead of looping forever. */
+    private volatile Component refusalReason;
     private volatile long nextAttemptAt;
     private volatile long lastAttemptAt;
     private volatile long retryAnchorAt;
@@ -172,6 +176,26 @@ public final class ReconnectSession {
 
     public int attempts() {
         return attempts;
+    }
+
+    public int refusals() {
+        return refusals;
+    }
+
+    public Component refusalReason() {
+        return refusalReason;
+    }
+
+    public void refused(Component reason) {
+        refusals++;
+        if (reason != null) {
+            refusalReason = reason;
+        }
+    }
+
+    public void notRefused() {
+        refusals = 0;
+        refusalReason = null;
     }
 
     public int immediateAttempts() {

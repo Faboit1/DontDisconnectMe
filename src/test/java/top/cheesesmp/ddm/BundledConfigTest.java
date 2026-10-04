@@ -154,4 +154,21 @@ class BundledConfigTest {
         assertEquals(config.defaultProfile(), config.profile("something-nobody-configured"));
         assertEquals(config.defaultProfile(), config.profile(null));
     }
+
+    @Test
+    void theFirstRetryWaitsForTheBackendToFinishSavingPlayerData() throws Exception {
+        // A kick runs the backend's quit path, including the player-data save.
+        // Reconnecting inside that window loads a stale inventory and the next
+        // quit writes it back, which duplicates whatever changed in between.
+        long delay = BundledConfig.load().defaultProfile().reconnect().immediate().delayMs();
+        assertTrue(delay >= 1000L, "expected room for an async save, got " + delay + "ms");
+    }
+
+    @Test
+    void aServerThatKeepsRefusingAPlayerEndsTheSession() throws Exception {
+        var retry = BundledConfig.load().defaultProfile().reconnect().retry();
+        assertTrue(retry.refusalGiveUp() > 0, "a punishment must not be retried forever");
+        assertFalse(retry.refusalsExhausted(retry.refusalGiveUp() - 1));
+        assertTrue(retry.refusalsExhausted(retry.refusalGiveUp()));
+    }
 }

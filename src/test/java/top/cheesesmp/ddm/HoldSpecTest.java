@@ -54,4 +54,25 @@ class HoldSpecTest {
         assertEquals(10_000L, config.profile("survival").hold().keepAliveIntervalMs(),
                 "unmentioned freeze settings are still inherited");
     }
+
+    @Test
+    void theDisconnectVetoIsBoundedSoAHeldPlayerStaysKickable() throws Exception {
+        // Swallowing every disconnect for the whole hold would make a held
+        // player immune to proxy-side bans and kicks, so the window has a
+        // deadline and cannot be set to "forever" from the file either.
+        HoldSpec bundled = BundledConfig.load().defaultProfile().hold();
+        assertTrue(bundled.disconnectVetoMs() > 0L, "the intercepted kick still has to be swallowed");
+        assertTrue(bundled.disconnectVetoMs() <= 10_000L);
+
+        HoldSpec silly = HoldSpec.from(ConfigSection.of(Map.of(
+                "freeze", Map.of("disconnect-veto-ms", 999_999_999))));
+        assertTrue(silly.disconnectVetoMs() <= 10_000L,
+                "expected a bounded veto, got " + silly.disconnectVetoMs());
+    }
+
+    @Test
+    void holdingIsUncappedByDefaultButCanBeCapped() throws Exception {
+        assertEquals(0, BundledConfig.load().defaultProfile().hold().maxHeld());
+        assertEquals(50, HoldSpec.from(ConfigSection.of(Map.of("max-held", 50))).maxHeld());
+    }
 }

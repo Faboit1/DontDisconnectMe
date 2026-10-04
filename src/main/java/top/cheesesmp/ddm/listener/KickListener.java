@@ -98,7 +98,8 @@ public final class KickListener {
         // Preferred path: keep them right where they are, on the proxy, with
         // their client none the wiser. Taking the connection over has to happen
         // now, before Velocity acts on this event's result.
-        if (profile.hold().mode() == HoldSpec.Mode.FREEZE && hasWorldLoaded && freezeHold.hold(player)) {
+        if (profile.hold().mode() == HoldSpec.Mode.FREEZE && hasWorldLoaded
+                && freezeHold.hold(player, profile.hold().disconnectVetoMs(), profile.hold().maxHeld())) {
             // They are on the proxy itself, so there is no hold server to name.
             manager.start(player, serverName, reason, restartMode, false).holdServer("");
             // Whatever result we set, the disconnect it produces is dropped by

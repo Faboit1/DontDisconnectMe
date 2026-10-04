@@ -31,6 +31,7 @@ public record ReconnectSpec(
             boolean onlyWhenOnline,
             int maxAttempts,
             long maxDurationMs,
+            int refusalGiveUp,
             GiveUpAction onGiveUp,
             String giveUpMessage) {
 
@@ -47,6 +48,7 @@ public record ReconnectSpec(
                     section.getBoolean("only-when-online", true),
                     (int) section.getLongClamped("max-attempts", 0L, 0L, 100_000L),
                     Math.max(0L, section.getLong("max-duration-seconds", 900L)) * 1000L,
+                    (int) section.getLongClamped("refusal-give-up", 3L, 0L, 1000L),
                     section.getEnum(GiveUpAction.class, "on-give-up", GiveUpAction.STAY),
                     section.getString("give-up-message", ""));
         }
@@ -70,6 +72,16 @@ public record ReconnectSpec(
 
         public boolean durationExhausted(long elapsedMs) {
             return maxDurationMs > 0L && elapsedMs >= maxDurationMs;
+        }
+
+        /**
+         * Whether the backend has now refused this player often enough to stop
+         * trying. A refusal is the backend answering with a reason of its own -
+         * a ban, a whitelist, "server full" - as opposed to simply being down,
+         * which is the case this whole plugin exists to ride out.
+         */
+        public boolean refusalsExhausted(int refusals) {
+            return refusalGiveUp > 0 && refusals >= refusalGiveUp;
         }
     }
 
